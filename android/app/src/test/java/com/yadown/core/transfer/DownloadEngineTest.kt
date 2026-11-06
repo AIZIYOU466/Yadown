@@ -122,6 +122,26 @@ class DownloadEngineTest {
         updatedAt = 0
     )
 
+    private suspend fun seedChunks(chunkDao: ChunkDao, total: Long, chunkSize: Long) {
+        chunkDao.upsertAll(
+            DownloadPlan.create(total, chunkSize).chunks.map { chunk ->
+                ChunkEntity(
+                    id = "i1-${chunk.index}",
+                    intentId = "i1",
+                    startByte = chunk.start,
+                    endByte = chunk.endInclusive,
+                    state = ChunkState.PENDING.name,
+                    retryCount = 0,
+                    checksum = null,
+                    connectionFingerprint = null,
+                    failureChainJson = null,
+                    startedAt = null,
+                    completedAt = null
+                )
+            }
+        )
+    }
+
     private fun engine(
         source: RangeSource,
         bitmapStore: BitmapStore,
@@ -144,6 +164,7 @@ class DownloadEngineTest {
         val intentDao = FakeIntentDao()
         val chunkDao = FakeChunkDao()
         intentDao.upsert(intent(total, "\"v1\""))
+        seedChunks(chunkDao, total, 4)
         val file = tmp.newFile()
         val progress = mutableListOf<DownloadProgress>()
 
@@ -173,6 +194,7 @@ class DownloadEngineTest {
         val intentDao = FakeIntentDao()
         val chunkDao = FakeChunkDao()
         intentDao.upsert(intent(total, "\"v1\""))
+        seedChunks(chunkDao, total, 4)
         val file = tmp.newFile()
 
         engine(source, bitmapStore, intentDao, chunkDao).download(
@@ -194,6 +216,7 @@ class DownloadEngineTest {
         val intentDao = FakeIntentDao()
         val chunkDao = FakeChunkDao()
         intentDao.upsert(intent(10, "\"v1\""))
+        seedChunks(chunkDao, 10, 4)
         val file = tmp.newFile()
 
         val error = runCatching {
