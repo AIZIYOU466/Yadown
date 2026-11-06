@@ -13,7 +13,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.TimeUnit
 
 /**
@@ -27,9 +26,9 @@ import java.util.concurrent.TimeUnit
  */
 @HiltWorker
 class DeferredSyncWorker @AssistedInject constructor(
-    @ApplicationContext private val context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
+    @Assisted appContext: Context,
+    @Assisted params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
         val intentId = inputData.getString(KEY_INTENT_ID) ?: return Result.failure()
