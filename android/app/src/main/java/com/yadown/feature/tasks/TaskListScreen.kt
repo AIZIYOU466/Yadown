@@ -22,8 +22,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -31,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import com.yadown.core.theme.Radius
 import com.yadown.core.theme.Spacing
 import com.yadown.core.theme.semanticColors
+import com.yadown.BuildConfig
+import com.yadown.feature.p0.P0ProbeScreen
 
 /** 任务状态与 docs/ARCHITECTURE.md 的 Intent 状态机一一对应，UI 只是状态的投影。 */
 enum class TaskState { PENDING, ACTIVE, PAUSED, COMPLETED, FAILED }
@@ -55,8 +62,22 @@ private val sampleTasks = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TaskListScreen() {
+    var showP0 by remember { mutableStateOf(false) }
+    if (showP0) {
+        P0ProbeScreen(onBack = { showP0 = false })
+        return
+    }
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Yadown", fontWeight = FontWeight.SemiBold) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Yadown", fontWeight = FontWeight.SemiBold) },
+                actions = {
+                    if (BuildConfig.DEBUG) {
+                        TextButton(onClick = { showP0 = true }) { Text("P0") }
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = { /* P4 接入新增任务 */ }) {
                 Icon(Icons.Filled.Add, contentDescription = "新增下载")

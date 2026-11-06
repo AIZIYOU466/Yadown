@@ -38,6 +38,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -53,6 +54,10 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
