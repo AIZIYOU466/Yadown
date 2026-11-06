@@ -15,10 +15,16 @@ import com.yadown.core.db.entity.ChunkEntity
 import com.yadown.core.db.entity.IntentEntity
 import com.yadown.core.db.entity.TransferEventEntity
 import com.yadown.core.net.RangeSource
+import com.yadown.core.net.ProbeResult
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
 import com.yadown.core.semantic.FormatResolverRegistry
 import com.yadown.core.semantic.ValueMap
+import com.yadown.core.source.ContentIdentity
+import com.yadown.core.source.SourceEndpoint
+import com.yadown.core.source.SourceKind
+import com.yadown.core.source.SourceRoute
+import com.yadown.core.source.SourceRouter
 import com.yadown.core.transfer.BitmapStore
 import com.yadown.core.transfer.ChunkState
 import com.yadown.core.transfer.CompletionVerifier
@@ -47,6 +53,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -66,7 +75,8 @@ data class TaskUi(
     val totalBytes: Long,
     val speedBytesPerSec: Long,
     val capability: String?,
-    val availableNow: Boolean
+    val availableNow: Boolean,
+    val sourceCount: Int
 )
 
 @Singleton
@@ -78,7 +88,8 @@ class DownloadRepository @Inject constructor(
     private val resolvers: FormatResolverRegistry,
     private val intentDao: IntentDao,
     private val chunkDao: ChunkDao,
-    private val eventDao: TransferEventDao
+    private val eventDao: TransferEventDao,
+    private val sourceRouter: SourceRouter
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -113,18 +124,20 @@ class DownloadRepository @Inject constructor(
                         ?.capability?.name,
                     availableNow = intent.state == IntentState.COMPLETED.name ||
                         intent.id in completedIntents ||
-                        unlockState[intent.id] == true
+                        unlockState[intent.id] == true,
+                    sourceCount = 1 + decodeMirrors(intent.mirrorUrlsJson).size
                 )
             }
         }
 
-    suspend fun createAndStart(url: String): String {
+    suspend fun createAndStart(url: String, mirrors: List<String> = emptyList()): String {
         // 低存储时提前失败，避免下载到一半写满分区。
         if (PlatformProbe.probeStorageCapability(context).lowStorage) {
             error("存储空间不足，请清理后重试")
         }
         val probe = source.probe(url)
         val total = probe.totalSize ?: error("无法确定文件大小，服务器未返回 Content-Length/Content-Range")
+        val verifiedMirrors = verifyMirrors(probe, url, mirrors)
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
@@ -150,6 +163,8 @@ class DownloadRepository @Inject constructor(
                 rangeSupported = probe.rangeSupported,
                 valueMapJson = descriptor?.valueMap?.let { json.encodeToString(it) },
                 availabilityContractJson = descriptor?.availabilityContract
+                    ?.let { json.encodeToString(it) },
+                mirrorUrlsJson = verifiedMirrors.takeIf { it.isNotEmpty() }
                     ?.let { json.encodeToString(it) },
                 state = IntentState.ACTIVE.name,
                 createdAt = now,
@@ -228,6 +243,7 @@ class DownloadRepository @Inject constructor(
                 .forEach { coverage.add(it.startByte..it.endByte) }
             intentDao.updateState(intentId, IntentState.ACTIVE.name, System.currentTimeMillis())
             val descriptor = descriptors[intentId] ?: loadDescriptor(intentId)
+            val routes = routesFor(intentId, url)
             engine.download(
                 intentId = intentId,
                 url = url,
@@ -260,7 +276,8 @@ class DownloadRepository @Inject constructor(
                 onChunkDone = { chunk ->
                     coverages.computeIfAbsent(intentId) { RangeCoverage() }
                         .add(chunk.start..chunk.endInclusive)
-                }
+                },
+                routes = routes
             )
             completedIntents.add(intentId)
             runCatching { publishCompleted(intentId, url) }
@@ -561,6 +578,46 @@ class DownloadRepository @Inject constructor(
             else -> "application/octet-stream"
         }
     }
+
+    /**
+     * 只接纳能证明与主源同一份字节的镜像：大小、Range 能力一致，
+     * 且至少有一个匹配的强校验器（ETag 或 Last-Modified）。
+     */
+    private suspend fun verifyMirrors(
+        primary: ProbeResult,
+        primaryUrl: String,
+        mirrors: List<String>
+    ): List<String> = coroutineScope {
+        mirrors.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it != primaryUrl }
+            .distinct()
+            .map { mirror ->
+                async {
+                    val candidate = runCatching { source.probe(mirror) }.getOrNull()
+                    mirror.takeIf { candidate != null && ContentIdentity.matches(primary, candidate) }
+                }
+            }
+            .toList()
+            .awaitAll()
+            .filterNotNull()
+    }
+
+    private suspend fun routesFor(intentId: String, url: String): List<SourceRoute> {
+        val intent = intentDao.getById(intentId) ?: return emptyList()
+        val endpoints = buildList {
+            add(SourceEndpoint(url, SourceKind.ORIGIN))
+            decodeMirrors(intent.mirrorUrlsJson).forEach {
+                add(SourceEndpoint(it, SourceKind.MIRROR))
+            }
+        }
+        // 源健康读取失败只影响排序，不能阻断下载。
+        return runCatching { sourceRouter.rank(endpoints) }.getOrDefault(emptyList())
+    }
+
+    private fun decodeMirrors(text: String?): List<String> =
+        text?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
+            .orEmpty()
 
     private fun notifyCompleted(intentId: String, url: String) {
         val file = fileOf(intentId, url)

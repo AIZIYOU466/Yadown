@@ -50,6 +50,7 @@ import com.yadown.core.theme.Spacing
 import com.yadown.core.theme.semanticColors
 import com.yadown.core.transfer.IntentState
 import com.yadown.feature.p0.P0ProbeScreen
+import com.yadown.feature.peer.PeerListDialog
 import com.yadown.feature.player.PlayerActivity
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,6 +59,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     var showP0 by remember { mutableStateOf(false) }
+    var showPeers by remember { mutableStateOf(false) }
     var showBackgroundGuide by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<TaskUi?>(null) }
@@ -74,6 +76,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
                 actions = {
                     TextButton(onClick = { showBackgroundGuide = true }) { Text("后台") }
                     if (BuildConfig.DEBUG) {
+                        TextButton(onClick = { showPeers = true }) { Text("附近") }
                         TextButton(onClick = { showP0 = true }) { Text("P0") }
                     }
                 }
@@ -120,11 +123,15 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
         BackgroundGuideDialog(onDismiss = { showBackgroundGuide = false })
     }
 
+    if (showPeers) {
+        PeerListDialog(onDismiss = { showPeers = false })
+    }
+
     if (showAddDialog) {
         AddTaskDialog(
             onDismiss = { showAddDialog = false },
-            onConfirm = { url ->
-                viewModel.createTask(url)
+            onConfirm = { urls ->
+                viewModel.createTask(urls)
                 showAddDialog = false
             }
         )
@@ -210,6 +217,7 @@ private fun TaskCard(
                 Text(
                     text = buildString {
                         append("${fmtBytes(task.downloadedBytes)} / ${fmtBytes(task.totalBytes)}")
+                        if (task.sourceCount > 1) append(" · ${task.sourceCount} 源")
                         if (task.state == IntentState.ACTIVE.name && task.speedBytesPerSec > 0) {
                             append(" · ${fmtBytes(task.speedBytesPerSec)}/s")
                         }
@@ -297,24 +305,35 @@ private fun StateBadge(state: String) {
 }
 
 @Composable
-private fun AddTaskDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var url by remember { mutableStateOf("") }
+private fun AddTaskDialog(onDismiss: () -> Unit, onConfirm: (List<String>) -> Unit) {
+    var urls by remember { mutableStateOf("") }
+    val parsed = remember(urls) {
+        urls.lines().map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新增下载") },
         text = {
-            OutlinedTextField(
-                value = url,
-                onValueChange = { url = it },
-                label = { Text("下载链接") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                OutlinedTextField(
+                    value = urls,
+                    onValueChange = { urls = it },
+                    label = { Text("下载链接") },
+                    minLines = 3,
+                    maxLines = 5,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "第一行为主源，其余行作为镜像；只有与主源大小、ETag/Last-Modified 一致的镜像才会启用。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(url.trim()) },
-                enabled = url.isNotBlank()
+                onClick = { onConfirm(parsed) },
+                enabled = parsed.isNotEmpty()
             ) { Text("开始") }
         },
         dismissButton = {

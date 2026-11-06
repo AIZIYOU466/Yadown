@@ -17,6 +17,8 @@ data class IntentEntity(
     @ColumnInfo(name = "range_supported") val rangeSupported: Boolean,
     @ColumnInfo(name = "value_map_json") val valueMapJson: String?,
     @ColumnInfo(name = "availability_contract_json") val availabilityContractJson: String?,
+    /** 与主源内容身份一致的镜像 URL（JSON 数组）；未启用镜像时为 null。 */
+    @ColumnInfo(name = "mirror_urls_json") val mirrorUrlsJson: String? = null,
     val state: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long

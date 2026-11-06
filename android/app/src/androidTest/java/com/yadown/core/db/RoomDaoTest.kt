@@ -6,6 +6,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.yadown.core.db.entity.ChunkEntity
 import com.yadown.core.db.entity.IntentEntity
+import com.yadown.core.db.entity.PeerIndexEntity
+import com.yadown.core.db.entity.SourceHealthEntity
 import com.yadown.core.db.entity.TransferEventEntity
 import com.yadown.core.transfer.ChunkState
 import com.yadown.core.transfer.IntentState
@@ -13,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -100,5 +103,35 @@ class RoomDaoTest {
         )
         assertEquals(1, db.transferEventDao().count())
         assertEquals("COMPLETED", db.transferEventDao().recent(1).single().event)
+    }
+
+    @Test
+    fun sourceHealthAndPeerIndexRoundTrip() = runBlocking {
+        val health = SourceHealthEntity(
+            sourceKey = "cdn.example.com/a/b",
+            ewmaThroughput = 1_000.0,
+            ewmaFailureRate = 0.1,
+            connectionLimitLearned = 3,
+            lastUpdated = 100,
+            ttlExpiresAt = 200,
+            ewmaLatency = 45.0
+        )
+        db.sourceHealthDao().upsert(health)
+        assertEquals(health, db.sourceHealthDao().get(health.sourceKey))
+        assertEquals(listOf(health), db.sourceHealthDao().getValid(now = 150))
+        assertTrue(db.sourceHealthDao().getValid(now = 250).isEmpty())
+
+        val peer = PeerIndexEntity(
+            peerId = "peer-1",
+            ipAddress = "192.168.1.20",
+            port = 8888,
+            contentHashesJson = "h1,h2",
+            lastSeenAt = 300,
+            reliabilityScore = 0.5
+        )
+        db.peerIndexDao().upsert(peer)
+        assertEquals(listOf("peer-1"), db.peerIndexDao().getSeenSince(300).map { it.peerId })
+        db.peerIndexDao().deleteSeenBefore(301)
+        assertTrue(db.peerIndexDao().getSeenSince(0).isEmpty())
     }
 }

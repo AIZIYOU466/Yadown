@@ -5,6 +5,8 @@ import androidx.room.Room
 import com.yadown.core.db.YadownDatabase
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
+import com.yadown.core.db.dao.PeerIndexDao
+import com.yadown.core.db.dao.SourceHealthDao
 import com.yadown.core.db.dao.TransferEventDao
 import dagger.Module
 import dagger.Provides
@@ -21,7 +23,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): YadownDatabase =
         Room.databaseBuilder(context, YadownDatabase::class.java, "yadown.db")
-            .addMigrations(YadownDatabase.MIGRATION_1_2)
+            .addMigrations(YadownDatabase.MIGRATION_1_2, YadownDatabase.MIGRATION_2_3)
             .build()
 
     @Provides
@@ -32,4 +34,10 @@ object DatabaseModule {
 
     @Provides
     fun provideTransferEventDao(db: YadownDatabase): TransferEventDao = db.transferEventDao()
+
+    @Provides
+    fun provideSourceHealthDao(db: YadownDatabase): SourceHealthDao = db.sourceHealthDao()
+
+    @Provides
+    fun providePeerIndexDao(db: YadownDatabase): PeerIndexDao = db.peerIndexDao()
 }

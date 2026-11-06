@@ -25,11 +25,12 @@ class TaskListViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    fun createTask(url: String) {
-        if (url.isBlank()) return
+    fun createTask(urls: List<String>) {
+        val cleaned = urls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val primary = cleaned.firstOrNull() ?: return
         viewModelScope.launch {
             // 探测失败（无效 URL、服务器不返回长度）不能让异常逃出协程导致崩溃。
-            runCatching { repository.createAndStart(url) }
+            runCatching { repository.createAndStart(primary, cleaned.drop(1)) }
                 .onFailure { _error.value = it.message ?: "创建任务失败" }
         }
     }

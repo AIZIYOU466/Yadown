@@ -8,12 +8,18 @@ import com.yadown.core.net.RangePayload
 import com.yadown.core.net.RangeSource
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ValueMap
+import com.yadown.core.source.SourceEndpoint
+import com.yadown.core.source.SourceHealthRegistry
+import com.yadown.core.source.SourceRoute
+import com.yadown.core.source.SourceSelection
 import com.yadown.core.telemetry.TransferTelemetry
 import com.yadown.core.survival.FsyncGate
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -46,15 +52,22 @@ class DownloadEngine(
     private val chunkDao: ChunkDao,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val fsyncGate: FsyncGate = FsyncGate()
+    private val fsyncGate: FsyncGate = FsyncGate(),
+    private val healthRegistry: SourceHealthRegistry? = null
 ) {
+    private data class PendingChunk(
+        val chunk: ChunkRange,
+        val retryCount: Int,
+        val sourceSlot: Int
+    )
     private sealed interface Outcome {
         data class Done(val chunk: ChunkRange) : Outcome
         data class Failed(
             val chunk: ChunkRange,
             val cause: FailureCause,
             val detail: String,
-            val retryCount: Int
+            val retryCount: Int,
+            val sourceSlot: Int
         ) : Outcome
     }
 
@@ -73,7 +86,8 @@ class DownloadEngine(
         availability: AvailabilityContract? = null,
         onProgress: (DownloadProgress) -> Unit = {},
         onAvailable: () -> Unit = {},
-        onChunkDone: (ChunkRange) -> Unit = {}
+        onChunkDone: (ChunkRange) -> Unit = {},
+        routes: List<SourceRoute> = emptyList()
     ) = withContext(ioDispatcher) {
         require(concurrency > 0) { "concurrency 必须为正: $concurrency" }
         val intent = intentDao.getById(intentId) ?: error("intent 不存在: $intentId")
@@ -83,6 +97,7 @@ class DownloadEngine(
             downloadSequential(intentId, url, destPath, total, onProgress)
             return@withContext
         }
+        val sourceRoutes = if (routes.isEmpty()) listOf(defaultRoute(url)) else routes
         val plan = DownloadPlan.create(total, chunkSize)
         val dbChunks = chunkDao.getByIntent(intentId)
         val fingerprint = PlanFingerprint.of(total, chunkSize)
@@ -115,6 +130,10 @@ class DownloadEngine(
 
         val bitmapMutex = Mutex()
         val health = HealthTracker()
+        // 每源在途数用学习到的连接上限约束；与全局 DispatcherPolicy 共同构成两层闸门。
+        val inFlight = ConcurrentHashMap<String, AtomicInteger>()
+            .apply { sourceRoutes.forEach { getOrPut(it.healthKey) { AtomicInteger() } } }
+        fun inFlightOf(key: String): Int = inFlight[key]?.get() ?: 0
         // 子块 index 必须从持久化的最大值继续；从 plan.chunks.size 重开会覆盖上次会话的子块。
         var nextIndex = ((dbChunks.maxOfOrNull { parseChunkIndex(it.id) } ?: -1) + 1)
             .coerceAtLeast(plan.chunks.size)
@@ -129,15 +148,22 @@ class DownloadEngine(
                 val limit = DispatcherPolicy.maxRequests(health.score(), storageIops)
                     .coerceIn(1, concurrency)
                 while (pending.isNotEmpty() && active < limit) {
-                    val (chunk, retry) = pending.removeFirst()
+                    val next = pending.removeFirst()
+                    val route = SourceSelection.pick(
+                        routes = sourceRoutes,
+                        slot = next.chunk.index + next.sourceSlot,
+                        inFlight = ::inFlightOf
+                    )
+                    inFlight.getValue(route.healthKey).incrementAndGet()
                     active++
                     launch {
                         val outcome = try {
+                            val startedAt = clock()
                             downloadChunk(
                                 intentId = intentId,
-                                url = url,
+                                route = route,
                                 destPath = destPath,
-                                chunk = chunk,
+                                chunk = next.chunk,
                                 session = session,
                                 bitmap = bitmap,
                                 fingerprint = fingerprint,
@@ -147,9 +173,14 @@ class DownloadEngine(
                                 onProgress = onProgress,
                                 onChunkDone = onChunkDone
                             )
+                            val elapsedMs = (clock() - startedAt).coerceAtLeast(1)
+                            val throughput = next.chunk.length() * 1000.0 / elapsedMs
+                            runCatching {
+                                healthRegistry?.recordSuccess(route.healthKey, throughput, elapsedMs.toDouble())
+                            }
                             health.recordSuccess()
                             if (availability != null && readyRanges != null && !availableUnlocked.get()) {
-                                readyRanges.add(chunk.start..chunk.endInclusive)
+                                readyRanges.add(next.chunk.start..next.chunk.endInclusive)
                                 if (availability.isAvailable { s, e -> readyRanges.covers(s, e) } &&
                                     availableUnlocked.compareAndSet(false, true)
                                 ) {
@@ -157,14 +188,17 @@ class DownloadEngine(
                                     onAvailable()
                                 }
                             }
-                            Outcome.Done(chunk)
+                            Outcome.Done(next.chunk)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
                             health.recordFailure()
                             val cause = (e as? DownloadException)?.failureCause ?: FailureCause.UNKNOWN
+                            runCatching { healthRegistry?.recordFailure(route.healthKey, cause) }
                             TransferTelemetry.onChunkFailed(cause)
-                            Outcome.Failed(chunk, cause, e.message ?: "", retry)
+                            Outcome.Failed(next.chunk, cause, e.message ?: "", next.retryCount, next.sourceSlot)
+                        } finally {
+                            inFlight.getValue(route.healthKey).decrementAndGet()
                         }
                         results.send(outcome)
                     }
@@ -181,6 +215,7 @@ class DownloadEngine(
                             chunk = outcome.chunk,
                             cause = outcome.cause,
                             retryCount = outcome.retryCount,
+                            sourceSlot = outcome.sourceSlot,
                             nextIndex = { nextIndex++ },
                             pending = pending
                         )
@@ -242,9 +277,9 @@ class DownloadEngine(
         plan: DownloadPlan,
         dbChunks: List<ChunkEntity>,
         valueMap: ValueMap? = null
-    ): ArrayDeque<Pair<ChunkRange, Int>> {
+    ): ArrayDeque<PendingChunk> {
         val byIndex = dbChunks.associateBy { parseChunkIndex(it.id) }
-        val pending = ArrayDeque<Pair<ChunkRange, Int>>()
+        val pending = ArrayDeque<PendingChunk>()
 
         // 位图按 index 索引，因此只在计划内 chunk 上做语义重排；
         // 顺序传输（valueMap == null）时 priorityOrder 返回原序，行为不变。
@@ -252,7 +287,13 @@ class DownloadEngine(
             val entity = byIndex[index] ?: continue
             if (entity.state == ChunkState.DONE.name || entity.state == ChunkState.INVALIDATED.name) continue
             // 位图只是索引，不是提交记录：DB 未 DONE 时必须重新下载。
-            pending.addLast(ChunkRange(index, entity.startByte, entity.endByte) to entity.retryCount)
+            pending.addLast(
+                PendingChunk(
+                    ChunkRange(index, entity.startByte, entity.endByte),
+                    entity.retryCount,
+                    0
+                )
+            )
         }
 
         // 裂解产生的子 chunk index 超出原始计划，位图不记录，按完成状态过滤后追加。
@@ -262,7 +303,11 @@ class DownloadEngine(
             .sortedBy { it.startByte }
             .forEach {
                 pending.addLast(
-                    ChunkRange(parseChunkIndex(it.id), it.startByte, it.endByte) to it.retryCount
+                    PendingChunk(
+                        ChunkRange(parseChunkIndex(it.id), it.startByte, it.endByte),
+                        it.retryCount,
+                        0
+                    )
                 )
             }
 
@@ -328,8 +373,9 @@ class DownloadEngine(
         chunk: ChunkRange,
         cause: FailureCause,
         retryCount: Int,
+        sourceSlot: Int,
         nextIndex: () -> Int,
-        pending: ArrayDeque<Pair<ChunkRange, Int>>
+        pending: ArrayDeque<PendingChunk>
     ): Boolean {
         val id = chunkId(intentId, chunk.index)
         if (retryCount >= ChunkStateMachine.MAX_RETRIES) {
@@ -366,22 +412,23 @@ class DownloadEngine(
                 endByte = split.second.last
             )
             chunkDao.replaceWithChildren(id, childA, childB)
+            val nextSlot = sourceSlot + 1
             pending.addLast(
-                ChunkRange(indexA, split.first.first, split.first.last) to retryCount + 1
+                PendingChunk(ChunkRange(indexA, split.first.first, split.first.last), retryCount + 1, nextSlot)
             )
             pending.addLast(
-                ChunkRange(indexB, split.second.first, split.second.last) to retryCount + 1
+                PendingChunk(ChunkRange(indexB, split.second.first, split.second.last), retryCount + 1, nextSlot)
             )
         } else {
             chunkDao.updateState(id, ChunkState.PENDING.name)
-            pending.addLast(chunk to retryCount + 1)
+            pending.addLast(PendingChunk(chunk, retryCount + 1, sourceSlot + 1))
         }
         return true
     }
 
     private suspend fun downloadChunk(
         intentId: String,
-        url: String,
+        route: SourceRoute,
         destPath: String,
         chunk: ChunkRange,
         session: RangeSession,
@@ -397,8 +444,8 @@ class DownloadEngine(
         val startedAt = clock()
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
-        val payload = TransferLimiter.withPermit(url) {
-            readRangeWithWatchdog(url, chunk, startedAt, total)
+        val payload = TransferLimiter.withPermit(route.url) {
+            readRangeWithWatchdog(route.url, chunk, startedAt, total)
         }
 
         val validation = RangeValidator.validate(
@@ -434,7 +481,9 @@ class DownloadEngine(
                     // 裂解产生的子 chunk index 超出原始位图，完成状态由 DB 记录。
                     if (chunk.index < bitmap.totalChunks) {
                         bitmap.markDone(chunk.index)
-                        bitmaps.save(intentId, bitmap, fingerprint)
+                        // 位图是索引而非提交记录：写失败不能把已落盘的数据判为失败，
+                        // 重开任务时会按 DB 的 DONE 集合重建位图。
+                        runCatching { bitmaps.save(intentId, bitmap, fingerprint) }
                     }
                 }
                 chunkDao.updateProgress(id, ChunkState.DONE.name, 0, startedAt, clock(), checksum, null)
@@ -537,6 +586,16 @@ class DownloadEngine(
 
     private fun parseChunkIndex(id: String): Int =
         id.substringAfterLast('-').toIntOrNull() ?: -1
+
+    /** 单源调用方的默认路由；连接上限不做限制，保持接入多源前的原行为。 */
+    private fun defaultRoute(url: String): SourceRoute = SourceRoute(
+        endpoint = SourceEndpoint(url),
+        score = 1.0,
+        reliability = 1.0,
+        throughputScore = 1.0,
+        connectionLimit = Int.MAX_VALUE,
+        usable = true
+    )
 
     companion object {
         private const val WATCHDOG_POLL_MS = 500L

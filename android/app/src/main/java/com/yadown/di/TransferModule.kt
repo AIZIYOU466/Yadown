@@ -11,6 +11,10 @@ import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.FileBitmapStore
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
+import com.yadown.core.db.dao.SourceHealthDao
+import com.yadown.core.source.RoomSourceHealthRegistry
+import com.yadown.core.source.SourceHealthRegistry
+import com.yadown.core.source.SourceRouter
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -47,11 +51,29 @@ object TransferModule {
 
     @Provides
     @Singleton
+    fun provideSourceHealthRegistry(dao: SourceHealthDao): SourceHealthRegistry =
+        RoomSourceHealthRegistry(dao)
+
+    @Provides
+    @Singleton
+    fun provideSourceRouter(registry: SourceHealthRegistry): SourceRouter =
+        SourceRouter(registry)
+
+    @Provides
+    @Singleton
     fun provideDownloadEngine(
         source: RangeSource,
         files: FileStore,
         bitmaps: BitmapStore,
         intentDao: IntentDao,
-        chunkDao: ChunkDao
-    ): DownloadEngine = DownloadEngine(source, files, bitmaps, intentDao, chunkDao)
+        chunkDao: ChunkDao,
+        healthRegistry: SourceHealthRegistry
+    ): DownloadEngine = DownloadEngine(
+        source = source,
+        files = files,
+        bitmaps = bitmaps,
+        intentDao = intentDao,
+        chunkDao = chunkDao,
+        healthRegistry = healthRegistry
+    )
 }

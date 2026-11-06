@@ -12,5 +12,6 @@ data class SourceHealthEntity(
     @ColumnInfo(name = "ewma_failure_rate") val ewmaFailureRate: Double,
     @ColumnInfo(name = "connection_limit_learned") val connectionLimitLearned: Int?,
     @ColumnInfo(name = "last_updated") val lastUpdated: Long,
-    @ColumnInfo(name = "ttl_expires_at") val ttlExpiresAt: Long
+    @ColumnInfo(name = "ttl_expires_at") val ttlExpiresAt: Long,
+    @ColumnInfo(name = "ewma_latency", defaultValue = "0.0") val ewmaLatency: Double = 0.0
 )

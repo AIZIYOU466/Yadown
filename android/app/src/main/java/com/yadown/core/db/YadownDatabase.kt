@@ -6,6 +6,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
+import com.yadown.core.db.dao.PeerIndexDao
+import com.yadown.core.db.dao.SourceHealthDao
 import com.yadown.core.db.dao.TransferEventDao
 import com.yadown.core.db.entity.BitmapSidecarEntity
 import com.yadown.core.db.entity.ChunkEntity
@@ -25,13 +27,15 @@ import com.yadown.core.db.entity.TransferEventEntity
         PlatformCapabilityEntity::class,
         TransferEventEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class YadownDatabase : RoomDatabase() {
     abstract fun intentDao(): IntentDao
     abstract fun chunkDao(): ChunkDao
     abstract fun transferEventDao(): TransferEventDao
+    abstract fun sourceHealthDao(): SourceHealthDao
+    abstract fun peerIndexDao(): PeerIndexDao
 
     companion object {
         /** v2 只增加任务级遥测表，不改动既有表。 */
@@ -61,6 +65,16 @@ abstract class YadownDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_transfer_events_created_at` " +
                         "ON `transfer_events` (`created_at`)"
+                )
+            }
+        }
+
+        /** v3 为 intents 增加镜像 URL 列表、为 source_health 增加延迟 EWMA；peer_index 在 v1 已建表。 */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `intents` ADD COLUMN `mirror_urls_json` TEXT")
+                db.execSQL(
+                    "ALTER TABLE `source_health` ADD COLUMN `ewma_latency` REAL NOT NULL DEFAULT 0.0"
                 )
             }
         }

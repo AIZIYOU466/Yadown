@@ -20,7 +20,6 @@ CLASSES="
 com.yadown.core.net.OkHttpRangeSourceTest
 com.yadown.core.semantic.ValueMapTest
 com.yadown.core.semantic.AvailabilityContractTest
-com.yadown.core.semantic.FormatResolverRegistryTest
 com.yadown.core.semantic.Mp4FormatResolverTest
 com.yadown.core.semantic.ApkFormatResolverTest
 com.yadown.core.semantic.PdfFormatResolverTest
@@ -32,6 +31,9 @@ com.yadown.core.transfer.CrossValidatorTest
 com.yadown.core.transfer.DispatcherPolicyTest
 com.yadown.core.transfer.CompletionVerifierTest
 com.yadown.core.transfer.DownloadEngineTest
+com.yadown.core.transfer.MultiSourceDownloadTest
+com.yadown.core.transfer.CrashRecoveryTest
+com.yadown.core.transfer.EndToEndDownloadTest
 com.yadown.core.transfer.DownloadPlanTest
 com.yadown.core.transfer.DownloadPlanPriorityTest
 com.yadown.core.transfer.FailureRecoveryTest
@@ -48,6 +50,10 @@ com.yadown.core.survival.FsyncGateTest
 com.yadown.core.survival.LifecycleManagerTest
 com.yadown.core.survival.BatteryGuidanceTest
 com.yadown.core.survival.RomDetectorTest
+com.yadown.core.source.SourceHealthModelTest
+com.yadown.core.source.RoomSourceHealthRegistryTest
+com.yadown.core.source.SourceRouterTest
+com.yadown.core.peer.PeerIndexTest
 "
 
 java -cp "$CP" org.junit.runner.JUnitCore $CLASSES

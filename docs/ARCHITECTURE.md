@@ -92,6 +92,7 @@ CREATE TABLE intents (
     range_supported INTEGER DEFAULT 0,      -- 布尔
     value_map_json TEXT,                    -- ValueMap序列化
     availability_contract_json TEXT,        -- 可用性契约
+    mirror_urls_json TEXT,                  -- 与主源内容身份一致的镜像 URL 列表
     state TEXT NOT NULL,                    -- PENDING/ACTIVE/PAUSED/COMPLETED/FAILED
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -140,7 +141,8 @@ CREATE TABLE source_health (
     ewma_failure_rate REAL,
     connection_limit_learned INTEGER,       -- 学到的保守连接上限
     last_updated INTEGER,
-    ttl_expires_at INTEGER                  -- 24h TTL
+    ttl_expires_at INTEGER,                 -- 24h TTL
+    ewma_latency REAL DEFAULT 0.0           -- v3 增加：滑动窗口延迟
 );
 ```
 
@@ -320,12 +322,34 @@ interface LinkAggregator {
 }
 
 interface SourceHealthRegistry {
-    fun recordSuccess(sourceKey: String, throughput: Long, latency: Long)
-    fun recordFailure(sourceKey: String, cause: FailureCause)
-    fun getConnectionLimit(sourceKey: String): Int?
-    fun getHealthySources(contentId: String): List<SourceRoute>
+    suspend fun recordSuccess(sourceKey: String, throughput: Double, latencyMs: Double)
+    suspend fun recordFailure(sourceKey: String, cause: FailureCause)
+    suspend fun get(sourceKey: String): SourceHealth?
+    suspend fun getConnectionLimit(sourceKey: String): Int?
+}
+
+// 内容→源映射由调用方以 endpoint 列表提供，因此不保留 contentId 版查询。
+interface SourceRouter {
+    suspend fun rank(endpoints: List<SourceEndpoint>): List<SourceRoute>
+    fun pick(routes: List<SourceRoute>, slot: Int, inFlight: (String) -> Int): SourceRoute
 }
 ```
+
+**T4.1/T4.4 实现口径（2026-11）**：
+
+- `source_key` = 域名 + 路径前两级，不含 query（避免签名参数把同一源拆成无数 key）。
+- 吞吐/延迟/失败率均为 EWMA（α=0.3，24h TTL）；只有可归因于源的失败写入健康度，存储、内容漂移、预算类失败不污染源评分。
+- 连接上限从 2 起步，失败率 ≤0.05 时逐次 +1、上限 4（与每主机闸门一致）；失败率 >0.2 立即减半，下限 1。
+- 评分 = 0.55×可靠性 + 0.30×吞吐归一化 + 0.15×本地性 − 0.10×成本；无样本源用中性先验（0.8/0.5）。
+- 逐块选源：`slot = chunkIndex + sourceSlot` 轮转，失败后 `sourceSlot+1` 换源；每源在途数受学习到的连接上限约束，全局仍受 DispatcherPolicy 与 TransferLimiter 约束。
+- **镜像准入**：必须与主源大小、Range 能力一致，且 ETag 或 Last-Modified 至少一项相同。分块校验和只能证明块没写坏，不能证明各源给的是同一份字节；身份不可证明的镜像一律拒绝。
+
+**peer 信任模型（定案，T4.3 实施前生效）**：
+
+- peer 传输只允许自签 TLS（证书与私钥存 Android KeyStore），禁止明文 HTTP。
+- 首次连接由双方比对 6 位短码（证书 SHA-256 指纹派生）后 TOFU 固定；指纹变化必须重新配对。
+- 内容按分块 xxHash64 校验，并核对内容身份（大小 + ETag/Last-Modified 或签名内容清单）。
+- mDNS 本地网络权限：targetSdk 36 及以下由 INTERNET 隐式授予，**不要**声明 `ACCESS_LOCAL_NETWORK`；targetSdk 37+ 才声明并在运行时请求，或优先使用 `DiscoveryRequest.FLAG_SHOW_PICKER` 的系统选择器。
 
 三条工程假设需在此层验证（见第 8 节）。
 
@@ -500,5 +524,6 @@ interface PlatformAdapter {
 - **语义解析矩阵**：MP4（moov 优先）/ APK（Manifest 优先）/ PDF（目录优先）各自的格式解析边界与降级路径，随内容格式演变持续维护。
 - **ROM 适配矩阵**：EMUI/HyperOS/MIUI/ColorOS/OriginOS/AOSP 的 Service 存活、权限引导、存储行为差异，形成可查询的适配表格。
 
-*架构版本：v1.0 — 2026-11-06*
+*架构版本：v1.1 — 2026-11-06*
+*v1.1 变更：L2 源健康/路由落地；`intents.mirror_urls_json`、`source_health.ewma_latency`（Room v3）；peer 信任模型定案；本地网络权限口径随 Android 官方文档更新。*
 *定稿来源：DeepSeek 分享对话 h5zgapohajh5b1tcwu + 用户确认（Yadown 项目，UI 对齐 AiCode，硬性要求对齐 yaya_ai R1）*
