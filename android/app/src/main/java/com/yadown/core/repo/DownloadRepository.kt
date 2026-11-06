@@ -1,6 +1,8 @@
 package com.yadown.core.repo
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
 import com.yadown.core.db.entity.ChunkEntity
@@ -10,6 +12,7 @@ import com.yadown.core.transfer.ChunkState
 import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.DownloadPlan
 import com.yadown.core.transfer.IntentState
+import com.yadown.service.DownloadService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.UUID
@@ -111,6 +114,7 @@ class DownloadRepository @Inject constructor(
 
     fun start(intentId: String, url: String) {
         if (jobs[intentId]?.isActive == true) return
+        ensureService()
         jobs[intentId] = scope.launch {
             try {
                 intentDao.updateState(intentId, IntentState.ACTIVE.name, System.currentTimeMillis())
@@ -124,6 +128,7 @@ class DownloadRepository @Inject constructor(
                 intentDao.updateState(intentId, IntentState.FAILED.name, System.currentTimeMillis())
             } finally {
                 jobs.remove(intentId)
+                if (jobs.isEmpty()) stopService()
             }
         }
     }
@@ -134,6 +139,19 @@ class DownloadRepository @Inject constructor(
 
     fun resume(intentId: String, url: String) {
         start(intentId, url)
+    }
+
+    private fun ensureService() {
+        val intent = Intent(context, DownloadService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    private fun stopService() {
+        context.stopService(Intent(context, DownloadService::class.java))
     }
 
     private fun destPathOf(intentId: String, url: String): String {
