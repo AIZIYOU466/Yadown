@@ -310,11 +310,14 @@ class DownloadEngineTest {
         )
 
         assertEquals(listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9).map { it.toByte() }, file.readBytes().toList())
-        assertTrue(bitmapStore.load("i1", 3).allDone())
         assertEquals(IntentState.COMPLETED.name, intentDao.getById("i1")!!.state)
         assertTrue(
             "原 chunk 被裂解标记 INVALIDATED",
             chunkDao.countByState("i1", ChunkState.INVALIDATED.name) >= 1
+        )
+        assertTrue(
+            "裂解后的子分块应完成",
+            chunkDao.countByState("i1", ChunkState.DONE.name) >= 3
         )
     }
 }
