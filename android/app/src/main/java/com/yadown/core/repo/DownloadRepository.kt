@@ -3,11 +3,13 @@ package com.yadown.core.repo
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import androidx.core.content.FileProvider
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
 import com.yadown.core.db.entity.ChunkEntity
 import com.yadown.core.db.entity.IntentEntity
 import com.yadown.core.net.RangeSource
+import com.yadown.core.transfer.BitmapStore
 import com.yadown.core.transfer.ChunkState
 import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.DownloadPlan
@@ -34,6 +36,7 @@ data class TaskUi(
     val id: String,
     val sourceUrl: String,
     val fileName: String,
+    val mimeType: String?,
     val state: String,
     val downloadedBytes: Long,
     val totalBytes: Long
@@ -44,6 +47,7 @@ class DownloadRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val engine: DownloadEngine,
     private val source: RangeSource,
+    private val bitmaps: BitmapStore,
     private val intentDao: IntentDao,
     private val chunkDao: ChunkDao
 ) {
@@ -58,6 +62,7 @@ class DownloadRepository @Inject constructor(
                     id = intent.id,
                     sourceUrl = intent.sourceUrl,
                     fileName = fileNameOf(intent.sourceUrl),
+                    mimeType = intent.mimeType,
                     state = intent.state,
                     downloadedBytes = downloaded[intent.id] ?: 0L,
                     totalBytes = intent.totalSize ?: 0L
@@ -140,6 +145,32 @@ class DownloadRepository @Inject constructor(
     fun resume(intentId: String, url: String) {
         start(intentId, url)
     }
+
+    fun openIntent(task: TaskUi): Intent {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            fileOf(task.id, task.sourceUrl)
+        )
+        return Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, task.mimeType ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
+    fun deleteTask(task: TaskUi) {
+        pause(task.id)
+        scope.launch {
+            fileOf(task.id, task.sourceUrl).delete()
+            bitmaps.delete(task.id)
+            chunkDao.deleteByIntent(task.id)
+            intentDao.delete(task.id)
+            progress.update { it - task.id }
+        }
+    }
+
+    private fun fileOf(intentId: String, url: String): File =
+        File(destPathOf(intentId, url))
 
     private fun ensureService() {
         val intent = Intent(context, DownloadService::class.java)

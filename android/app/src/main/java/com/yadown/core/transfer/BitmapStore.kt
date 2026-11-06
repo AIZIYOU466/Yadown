@@ -5,6 +5,7 @@ import java.io.File
 interface BitmapStore {
     fun save(intentId: String, bitmap: ChunkBitmap)
     fun load(intentId: String, totalChunks: Int): ChunkBitmap
+    fun delete(intentId: String)
 }
 
 class FileBitmapStore(private val dir: File) : BitmapStore {
@@ -20,5 +21,9 @@ class FileBitmapStore(private val dir: File) : BitmapStore {
         } else {
             ChunkBitmap(totalChunks)
         }
+    }
+
+    override fun delete(intentId: String) {
+        File(dir, "$intentId.bitset").delete()
     }
 }

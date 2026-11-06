@@ -53,6 +53,10 @@ class DownloadEngineTest {
 
         override fun load(intentId: String, totalChunks: Int): ChunkBitmap =
             map[intentId] ?: ChunkBitmap(totalChunks)
+
+        override fun delete(intentId: String) {
+            map.remove(intentId)
+        }
     }
 
     private class FakeIntentDao : IntentDao {

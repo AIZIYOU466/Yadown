@@ -35,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,6 +53,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
     var showP0 by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<TaskUi?>(null) }
 
     if (showP0) {
         P0ProbeScreen(onBack = { showP0 = false })
@@ -96,7 +98,11 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
                 verticalArrangement = Arrangement.spacedBy(Spacing.md)
             ) {
                 items(tasks, key = { it.id }) { task ->
-                    TaskCard(task = task, viewModel = viewModel)
+                    TaskCard(
+                        task = task,
+                        viewModel = viewModel,
+                        onDelete = { pendingDelete = it }
+                    )
                 }
             }
         }
@@ -111,10 +117,32 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
             }
         )
     }
+
+    pendingDelete?.let { task ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除任务") },
+            text = { Text("将删除任务记录和已下载的文件，确定吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteTask(task)
+                    pendingDelete = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
 }
 
 @Composable
-private fun TaskCard(task: TaskUi, viewModel: TaskListViewModel) {
+private fun TaskCard(
+    task: TaskUi,
+    viewModel: TaskListViewModel,
+    onDelete: (TaskUi) -> Unit
+) {
+    val context = LocalContext.current
     val semantic = MaterialTheme.semanticColors
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -151,23 +179,27 @@ private fun TaskCard(task: TaskUi, viewModel: TaskListViewModel) {
                 Text(
                     text = "${fmtBytes(task.downloadedBytes)} / ${fmtBytes(task.totalBytes)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = semantic.subtleText
+                    color = semantic.subtleText,
+                    modifier = Modifier.weight(1f)
                 )
-                when (task.state) {
-                    IntentState.ACTIVE.name -> TextButton(onClick = { viewModel.pause(task) }) {
-                        Text("暂停")
+                Row {
+                    if (task.state == IntentState.COMPLETED.name) {
+                        TextButton(onClick = {
+                            runCatching { context.startActivity(viewModel.openIntent(task)) }
+                        }) { Text("打开") }
                     }
-                    IntentState.PAUSED.name -> TextButton(onClick = { viewModel.resume(task) }) {
-                        Text("继续")
+                    when (task.state) {
+                        IntentState.ACTIVE.name -> TextButton(onClick = { viewModel.pause(task) }) {
+                            Text("暂停")
+                        }
+                        IntentState.PAUSED.name -> TextButton(onClick = { viewModel.resume(task) }) {
+                            Text("继续")
+                        }
+                        IntentState.FAILED.name -> TextButton(onClick = { viewModel.resume(task) }) {
+                            Text("重试")
+                        }
                     }
-                    IntentState.FAILED.name -> TextButton(onClick = { viewModel.resume(task) }) {
-                        Text("重试")
-                    }
-                    else -> Text(
-                        text = if (task.state == IntentState.COMPLETED.name) "已完成" else "等待",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = semantic.subtleText
-                    )
+                    TextButton(onClick = { onDelete(task) }) { Text("删除") }
                 }
             }
         }

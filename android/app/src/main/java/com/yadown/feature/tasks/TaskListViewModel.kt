@@ -1,5 +1,6 @@
 package com.yadown.feature.tasks
 
+import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yadown.core.repo.DownloadRepository
@@ -31,4 +32,8 @@ class TaskListViewModel @Inject constructor(
     fun resume(task: TaskUi) {
         repository.resume(task.id, task.sourceUrl)
     }
+
+    fun openIntent(task: TaskUi): Intent = repository.openIntent(task)
+
+    fun deleteTask(task: TaskUi) = repository.deleteTask(task)
 }
