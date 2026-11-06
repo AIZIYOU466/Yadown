@@ -173,8 +173,19 @@ class DownloadRepository @Inject constructor(
             fileOf(task.id, task.sourceUrl)
         )
         return Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, task.mimeType ?: "*/*")
+            setDataAndType(uri, resolvedMime(task))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
+    private fun resolvedMime(task: TaskUi): String {
+        val name = task.fileName.lowercase()
+        return when {
+            name.endsWith(".apk") -> "application/vnd.android.package-archive"
+            name.endsWith(".mp4") -> "video/mp4"
+            name.endsWith(".pdf") -> "application/pdf"
+            task.mimeType != null -> task.mimeType
+            else -> "*/*"
         }
     }
 

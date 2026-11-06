@@ -191,7 +191,9 @@ private fun TaskCard(
                     if (task.state == IntentState.COMPLETED.name) {
                         TextButton(onClick = {
                             runCatching { context.startActivity(viewModel.openIntent(task)) }
-                        }) { Text("打开") }
+                        }) {
+                            Text(if (task.fileName.endsWith(".apk", ignoreCase = true)) "安装" else "打开")
+                        }
                     }
                     when (task.state) {
                         IntentState.ACTIVE.name -> TextButton(onClick = { viewModel.pause(task) }) {
