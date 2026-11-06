@@ -8,6 +8,7 @@ import com.yadown.core.io.RandomAccessFileStore
 import com.yadown.core.net.ProbeResult
 import com.yadown.core.net.RangePayload
 import com.yadown.core.net.RangeSource
+import com.yadown.core.net.SequentialResult
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.Segment
 import com.yadown.core.semantic.ValueMap
@@ -83,6 +84,34 @@ class DownloadEngineTest {
                 etag = etag,
                 lastModified = null
             )
+        }
+    }
+
+    private class SequentialSource(private val total: Long) : RangeSource {
+        override suspend fun probe(url: String) = ProbeResult(total, false, null, null, null)
+
+        override suspend fun readRange(
+            url: String,
+            start: Long,
+            endInclusive: Long,
+            onProgress: (Long) -> Unit
+        ): RangePayload = error("非 Range 源不应走 readRange")
+
+        override suspend fun readSequential(
+            url: String,
+            start: Long,
+            onProgress: (Long) -> Unit,
+            onBytes: (ByteArray) -> Unit
+        ): SequentialResult {
+            val bytes = ByteArray(total.toInt()) { (it % 251).toByte() }
+            var offset = 0
+            while (offset < bytes.size) {
+                val size = minOf(3, bytes.size - offset)
+                onBytes(bytes.copyOfRange(offset, offset + size))
+                offset += size
+                onProgress(offset.toLong())
+            }
+            return SequentialResult(offset.toLong(), restarted = false)
         }
     }
 
@@ -253,7 +282,13 @@ class DownloadEngineTest {
         val chunkDao = FakeChunkDao()
         intentDao.upsert(intent(total, "\"v1\""))
         seedChunks(chunkDao, total, 4)
-        val file = tmp.newFile()
+        // 已完成分块必须在 DB 与文件里同时成立；位图只是加速索引，不是唯一真相。
+        chunkDao.upsertAll(
+            chunkDao.getByIntent("i1").map {
+                if (it.id == "i1-0") it.copy(state = ChunkState.DONE.name, checksum = 0L) else it
+            }
+        )
+        val file = tmp.newFile().apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
 
         engine(source, bitmapStore, intentDao, chunkDao).download(
             intentId = "i1",
@@ -265,6 +300,63 @@ class DownloadEngineTest {
 
         assertTrue(bitmapStore.load("i1", 3).allDone())
         assertEquals(IntentState.COMPLETED.name, intentDao.getById("i1")!!.state)
+    }
+
+    @Test
+    fun nonRangeSourceUsesSequentialDownload() = runTest {
+        val total = 10L
+        val intentDao = FakeIntentDao()
+        val chunkDao = FakeChunkDao()
+        intentDao.upsert(intent(total, null).copy(rangeSupported = false))
+        val file = tmp.newFile()
+        val progress = mutableListOf<DownloadProgress>()
+
+        engine(SequentialSource(total), InMemoryBitmapStore(), intentDao, chunkDao).download(
+            intentId = "i1",
+            url = "https://example.com/file",
+            destPath = file.absolutePath,
+            concurrency = 1,
+            chunkSize = 4,
+            onProgress = { progress += it }
+        )
+
+        assertEquals(
+            listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9).map { it.toByte() },
+            file.readBytes().toList()
+        )
+        assertEquals(IntentState.COMPLETED.name, intentDao.getById("i1")!!.state)
+        assertEquals(total, progress.last().downloadedBytes)
+        assertEquals(0, chunkDao.getByIntent("i1").size)
+    }
+
+    @Test
+    fun invalidatedChunksWithNoBytesAreNotCompleted() = runTest {
+        val total = 10L
+        val source = FakeSource(total, etag = "\"v1\"")
+        val intentDao = FakeIntentDao()
+        val chunkDao = FakeChunkDao()
+        intentDao.upsert(intent(total, "\"v1\""))
+        seedChunks(chunkDao, total, 4)
+        chunkDao.upsertAll(
+            chunkDao.getByIntent("i1").map {
+                it.copy(state = ChunkState.INVALIDATED.name, retryCount = 3)
+            }
+        )
+        val file = tmp.newFile()
+
+        val error = runCatching {
+            engine(source, InMemoryBitmapStore(), intentDao, chunkDao).download(
+                intentId = "i1",
+                url = "https://example.com/file",
+                destPath = file.absolutePath,
+                concurrency = 1,
+                chunkSize = 4
+            )
+        }.exceptionOrNull()
+
+        assertTrue("expected INCOMPLETE, got $error", error is DownloadException)
+        assertEquals(FailureCause.INCOMPLETE, (error as DownloadException).failureCause)
+        assertEquals(IntentState.FAILED.name, intentDao.getById("i1")!!.state)
     }
 
     @Test

@@ -84,6 +84,19 @@
 | T5.4 | 国产 ROM 适配测试（华为/小米/OPPO/vivo） | Service 存活率 > 90% |
 | T5.5 | 低端设备性能测试（eMMC） | 无 OOM、无 ANR |
 
+### P5 真机验收清单（2026-11 增补）
+
+- [ ] 首播：10Mbps 限速，MP4 moov 在头/尾各 3 个样本，记录 Time-to-First-Playable，目标 <10s。
+- [ ] 完成完整率：构造 200 全量/416/429/截断 server，确认不产生 COMPLETED 空洞，目标 100%。
+- [ ] 请求放大：1MB 分块永久失败，抓包确认单分块请求数 ≤15。
+- [ ] 杀进程/掉电：write/fsync/bitmap/DB 四个断点各 25 次；恢复后必须通过完成校验或明确 FAILED，不得假完成。
+- [ ] FGS 超时：`adb shell device_config put activity_manager data_sync_fgs_timeout_duration 60000`，确认 `onTimeout` 停止且无 `RemoteServiceException`。
+- [ ] UIDT：Android 14/15/16 各一台，确认 JobService 启动、通知、暂停/恢复。
+- [ ] ROM 存活：HyperOS/EMUI/ColorOS/OriginOS 后台 30 分钟存活率。
+- [ ] 媒体库：Android 10+ 完成后公共 Downloads 可打开，私有副本仍在。
+- [ ] 边下边播：暂停/失败/重启后打开播放器，30s 内给出错误或继续播放，不永久卡死。
+- [ ] peer：确认未启用明文 HTTP；L2 进入前必须完成 HTTPS/内容签名信任模型评审。
+
 ---
 
 ## 任务状态
@@ -97,11 +110,16 @@
 | P0/T0.1 多链路聚合 | 待真机 | 探针代码已就绪，待回填 |
 | P0/T0.2 mDNS | 待真机 | 探针代码已就绪，待回填 |
 | P0/T0.3 增量安装降级 | 待真机 | 已核实普通应用无法 `setStaged`，降级为「先下完再装」 |
-| P1 传输收敛层（L3） | 已完成 | 状态机/Room/位图/四重 Range 校验 + **T1.4 动态裂解（原子替换）/ T1.5 健康感知并发 / T1.6 stall watchdog** 均已接入运行时引擎；112 个单测通过；**L3 不依赖 P0** |
+| P1 传输收敛层（L3） | 已完成 | 状态机/Room/位图/四重 Range 校验 + **T1.4 动态裂解（原子替换）/ T1.5 健康感知并发 / T1.6 stall watchdog** 均已接入运行时引擎；196 个单测通过；**L3 不依赖 P0** |
+| 正确性脊柱（完成谓词/提交协议/校验和/原子位图/子块身份） | 已完成 | 完成必须由覆盖+文件长度证明；DONE 前 fsync；位图带 fingerprint/magic/xxHash64 且原子替换；子块 index 从 DB 最大值继续；完成校验失败会把缺失区间退回 PENDING |
+| 传输协议（先校验后读/顺序回退/416/429/弱 ETag） | 已完成 | 200 部分区间不读 body；206 读取上限 expected+1；416/429/非 identity 编码显式归因；非 Range 源走单流顺序下载；裂解预算按 retryCount 收敛 |
+| 平台 Carrier（FGS onTimeout/UIDT/Worker 上限） | 已完成（编译级，真机待验证） | dataSync 6 小时超时调用 onTimeout 并停止；Android 14+ UIDT JobService + RUN_USER_INITIATED_JOBS；暂停取消 Worker/UIDT；Worker 最多 5 次尝试 |
+| 系统治理与运行遥测 | 已完成（进程内 + 文件） | 全局 8 连接 / 每源 4 连接闸门；进度 200ms 节流；RangeCoverage 有序合并+二分；TransferTelemetry 聚合并写入 `filesDir/telemetry/events.ndjson` |
+| Instrumentation 骨架 | 已加（CI 编译门槛） | androidTest：Room DAO 往返、MediaStore 发布、DownloadingDataSource 读取；CI 增加 `assembleDebugAndroidTest`；真机执行与 CI 首跑待确认 |
 | UI 接入 | 已完成 | 真实任务流、新建任务、暂停/继续/重试、打开/删除 |
-| P2 系统生存层 | 已完成（真机项待验证） | T2.1 PlatformAdapter 五项探测（ROM/UIDT/存储能力/网络可达性/存储加密）；T2.2 Carrier 选择已接入下载路径（前台 FGS / 后台 UIDT 或 WorkManager、Doze 停传）；T2.3 ROM 感知后台引导（小米/华为/OPPO/vivo 直达设置页 + 电池白名单）；T2.4 完成后公共媒体库发布（仅 Android 10+）；T2.5 FsyncGate；存活率需真机测 |
+| P2 系统生存层 | 已完成（真机项待验证） | T2.1 PlatformAdapter 五项探测（ROM/UIDT/存储能力/网络可达性/存储加密）；T2.2 Carrier 选择已接入下载路径（前台 FGS / 后台 UIDT 或 WorkManager、Doze 停传）；T2.3 ROM 感知后台引导（小米/华为/OPPO/vivo 直达设置页 + 电池白名单）；T2.4 完成后公共媒体库发布（仅 Android 10+）；T2.5 FsyncGate；FGS `onTimeout` 与 UIDT JobService 已实现；存活率需真机测 |
 | P3 内容语义层 | 已完成（真机项待验证） | **T3.1 MP4 moov 优先（可边下边播）/ T3.2 APK Manifest 优先 / T3.3 PDF xref+Root 优先 / T3.4 AvailabilityContract 驱动 UI 解锁 / T3.5 未知格式顺序传输**；语义优先调度只改排队不动分块边界；APK 受 T0.3 约束仍为「下完再装」；PDF 查看器未接入，暂不承诺部分预览 |
-| P4 多源协同层 | 未开始 | — |
-| P5 集成真机验证 | 未开始 | — |
+| P4 多源协同层 | 未开始（受门槛约束） | P0/P5 通过前不进入；peer 传输必须先定 HTTPS/内容签名信任模型，禁止明文 HTTP |
+| P5 集成真机验证 | 未开始（清单已就绪） | 需回填首播时间、完成完整率、请求放大、掉电恢复、ROM 存活率；清单见 P5 节 |
 
 *ROADMAP 版本：v1.0 — 2026-11-06*

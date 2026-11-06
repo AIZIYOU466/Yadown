@@ -5,6 +5,9 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.yadown.core.repo.DownloadRepository
 import com.yadown.core.survival.DeferredSyncRunner
+import com.yadown.core.telemetry.TelemetryStore
+import com.yadown.core.telemetry.TransferTelemetry
+import java.io.File
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -21,6 +24,12 @@ class YadownApp : Application(), Configuration.Provider {
         DeferredSyncRunner.install { intentId, url ->
             repository.resumeDeferred(intentId, url)
         }
+        DeferredSyncRunner.installDirect { intentId, url ->
+            repository.executeDeferred(intentId, url)
+        }
+        TransferTelemetry.installStore(
+            TelemetryStore(File(filesDir, "telemetry/events.ndjson"))
+        )
     }
 
     override val workManagerConfiguration: Configuration

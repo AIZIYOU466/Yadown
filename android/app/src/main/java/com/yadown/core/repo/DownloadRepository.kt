@@ -10,8 +10,10 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
+import com.yadown.core.db.dao.TransferEventDao
 import com.yadown.core.db.entity.ChunkEntity
 import com.yadown.core.db.entity.IntentEntity
+import com.yadown.core.db.entity.TransferEventEntity
 import com.yadown.core.net.RangeSource
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
@@ -19,7 +21,9 @@ import com.yadown.core.semantic.FormatResolverRegistry
 import com.yadown.core.semantic.ValueMap
 import com.yadown.core.transfer.BitmapStore
 import com.yadown.core.transfer.ChunkState
+import com.yadown.core.transfer.CompletionVerifier
 import com.yadown.core.transfer.DownloadEngine
+import com.yadown.core.transfer.DownloadException
 import com.yadown.core.transfer.DownloadPlan
 import com.yadown.core.transfer.IntentState
 import com.yadown.core.transfer.RangeCoverage
@@ -30,8 +34,10 @@ import com.yadown.core.survival.LifecycleManager
 import com.yadown.core.survival.PlatformProbe
 import com.yadown.core.survival.StorageTiering
 import com.yadown.service.DownloadService
+import com.yadown.service.UidtScheduler
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -71,13 +77,15 @@ class DownloadRepository @Inject constructor(
     private val bitmaps: BitmapStore,
     private val resolvers: FormatResolverRegistry,
     private val intentDao: IntentDao,
-    private val chunkDao: ChunkDao
+    private val chunkDao: ChunkDao,
+    private val eventDao: TransferEventDao
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
     private val progress = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val speeds = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val speedSamples = ConcurrentHashMap<String, Pair<Long, Long>>()
+    private val progressEmitAt = ConcurrentHashMap<String, Long>()
     private val coverages = ConcurrentHashMap<String, RangeCoverage>()
     private val completedIntents = ConcurrentHashMap.newKeySet<String>()
     private val unlockState = ConcurrentHashMap<String, Boolean>()
@@ -89,6 +97,9 @@ class DownloadRepository @Inject constructor(
         combine(intentDao.observeAll(), progress, speeds) { intents, downloaded, speedMap ->
             intents.map { intent ->
                 intent.totalSize?.let { totalSizes[intent.id] = it }
+                if (intent.state == IntentState.COMPLETED.name) {
+                    completedIntents.add(intent.id)
+                }
                 TaskUi(
                     id = intent.id,
                     sourceUrl = intent.sourceUrl,
@@ -146,24 +157,34 @@ class DownloadRepository @Inject constructor(
             )
         )
 
-        val plan = DownloadPlan.create(total)
-        chunkDao.upsertAll(
-            plan.chunks.map { chunk ->
-                ChunkEntity(
-                    id = chunkId(id, chunk.index),
-                    intentId = id,
-                    startByte = chunk.start,
-                    endByte = chunk.endInclusive,
-                    state = ChunkState.PENDING.name,
-                    retryCount = 0,
-                    checksum = null,
-                    connectionFingerprint = null,
-                    failureChainJson = null,
-                    startedAt = null,
-                    completedAt = null
-                )
-            }
-        )
+        if (probe.rangeSupported) {
+            val plan = DownloadPlan.create(total)
+            chunkDao.upsertAll(
+                plan.chunks.map { chunk ->
+                    ChunkEntity(
+                        id = chunkId(id, chunk.index),
+                        intentId = id,
+                        startByte = chunk.start,
+                        endByte = chunk.endInclusive,
+                        state = ChunkState.PENDING.name,
+                        retryCount = 0,
+                        checksum = null,
+                        connectionFingerprint = null,
+                        failureChainJson = null,
+                        startedAt = null,
+                        completedAt = null
+                    )
+                }
+            )
+        }
+
+        // 预分配目标文件：播放器的 DataSource 用 file.length() 判断可读上界，
+        // 不预分配会导致边下边播在打开瞬间的长度处提前 EOF。
+        runCatching {
+            val dest = File(destPathOf(id, url))
+            dest.parentFile?.mkdirs()
+            RandomAccessFile(dest, "rw").use { it.setLength(total) }
+        }
 
         start(id, url)
         return id
@@ -171,8 +192,9 @@ class DownloadRepository @Inject constructor(
 
     fun start(intentId: String, url: String) {
         if (jobs[intentId]?.isActive == true) return
-        // 手动启动优先于后台兜底，避免同一任务被 WorkManager 与前台服务同时拉取。
+        // 手动启动优先于后台兜底，避免同一任务被 WorkManager/UIDT 与前台服务同时拉取。
         DeferredSyncWorker.cancel(context, intentId)
+        UidtScheduler.cancel(context, intentId)
         // Doze 下不抢前台服务：交给 WorkManager 等约束满足后续传（位图已落盘）。
         if (carrierFor(foreground = true) == Carrier.DOZE_STOPPED) {
             DeferredSyncWorker.enqueue(context, intentId, url)
@@ -198,6 +220,7 @@ class DownloadRepository @Inject constructor(
 
     /** 下载执行体：前台服务与 WorkManager 两条 Carrier 共用，区别只在谁负责保活。 */
     private suspend fun execute(intentId: String, url: String) {
+        val startedAt = System.currentTimeMillis()
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)
@@ -213,16 +236,22 @@ class DownloadRepository @Inject constructor(
                 availability = descriptor?.availabilityContract,
                 onProgress = { p ->
                     val now = System.currentTimeMillis()
-                    val prev = speedSamples[intentId]
-                    if (prev != null) {
-                        val elapsed = now - prev.second
-                        if (elapsed > 0) {
-                            val speed = (p.downloadedBytes - prev.first).coerceAtLeast(0L) * 1000 / elapsed
-                            speeds.update { it + (intentId to speed) }
+                    val last = progressEmitAt[intentId] ?: 0L
+                    val force = p.downloadedBytes >= p.totalBytes
+                    if (force || now - last >= PROGRESS_INTERVAL_MS) {
+                        progressEmitAt[intentId] = now
+                        val prev = speedSamples[intentId]
+                        if (prev != null) {
+                            val elapsed = now - prev.second
+                            if (elapsed > 0) {
+                                val speed = (p.downloadedBytes - prev.first)
+                                    .coerceAtLeast(0L) * 1000 / elapsed
+                                speeds.update { it + (intentId to speed) }
+                            }
                         }
+                        speedSamples[intentId] = p.downloadedBytes to now
+                        progress.update { it + (intentId to p.downloadedBytes) }
                     }
-                    speedSamples[intentId] = p.downloadedBytes to now
-                    progress.update { it + (intentId to p.downloadedBytes) }
                 },
                 onAvailable = {
                     unlockState[intentId] = true
@@ -236,13 +265,35 @@ class DownloadRepository @Inject constructor(
             completedIntents.add(intentId)
             runCatching { publishCompleted(intentId, url) }
             runCatching { notifyCompleted(intentId, url) }
+            recordEvent(
+                intentId = intentId,
+                event = "COMPLETED",
+                cause = null,
+                bytes = fileOf(intentId, url).length(),
+                startedAt = startedAt
+            )
         } catch (e: CancellationException) {
             intentDao.updateState(intentId, IntentState.PAUSED.name, System.currentTimeMillis())
+            recordEvent(
+                intentId = intentId,
+                event = "PAUSED",
+                cause = null,
+                bytes = progress.value[intentId] ?: 0L,
+                startedAt = startedAt
+            )
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             intentDao.updateState(intentId, IntentState.FAILED.name, System.currentTimeMillis())
+            recordEvent(
+                intentId = intentId,
+                event = "FAILED",
+                cause = (e as? DownloadException)?.failureCause?.name,
+                bytes = fileOf(intentId, url).length(),
+                startedAt = startedAt
+            )
         } finally {
             jobs.remove(intentId)
+            progressEmitAt.remove(intentId)
             speedSamples.remove(intentId)
             speeds.update { it - intentId }
             if (jobs.isEmpty()) stopService()
@@ -251,10 +302,33 @@ class DownloadRepository @Inject constructor(
 
     fun pause(intentId: String) {
         jobs[intentId]?.cancel()
+        DeferredSyncWorker.cancel(context, intentId)
+        UidtScheduler.cancel(context, intentId)
+    }
+
+    /** Android 15+ dataSync 前台服务到达 6 小时上限时，保存并停止，不触发系统异常。 */
+    fun onServiceTimeout() {
+        jobs.keys.toList().forEach { pause(it) }
     }
 
     fun resume(intentId: String, url: String) {
-        start(intentId, url)
+        scope.launch {
+            // 用户主动重试才重置 INVALIDATED；进程自动续传不重置，避免失败任务无限复活。
+            chunkDao.getByIntent(intentId)
+                .filter { it.state == ChunkState.INVALIDATED.name }
+                .forEach { chunk ->
+                    chunkDao.updateProgress(
+                        chunk.id,
+                        ChunkState.PENDING.name,
+                        0,
+                        null,
+                        null,
+                        null,
+                        null
+                    )
+                }
+            start(intentId, url)
+        }
     }
 
     /**
@@ -267,6 +341,33 @@ class DownloadRepository @Inject constructor(
         if (jobs[intentId]?.isActive == true) return true
         val intent = intentDao.getById(intentId) ?: return true
         if (intent.state == IntentState.COMPLETED.name) return true
+        // 用户主动暂停的任务不能被后台 Worker/UIDT 复活。
+        if (intent.state == IntentState.PAUSED.name) return true
+
+        if (carrier == Carrier.UIDT) {
+            if (UidtScheduler.schedule(context, intentId, url, intent.totalSize ?: 0L)) {
+                return true
+            }
+        }
+        return runDeferred(intentId, url, carrier)
+    }
+
+    /** UIDT JobService 的直接执行入口：只执行，不再调度 UIDT，避免自我循环。 */
+    suspend fun executeDeferred(intentId: String, url: String): Boolean {
+        val carrier = carrierFor(foreground = false)
+        if (carrier == Carrier.DOZE_STOPPED) return false
+        if (jobs[intentId]?.isActive == true) return true
+        val intent = intentDao.getById(intentId) ?: return true
+        if (intent.state == IntentState.COMPLETED.name) return true
+        if (intent.state == IntentState.PAUSED.name) return true
+        return runDeferred(intentId, url, carrier)
+    }
+
+    private suspend fun runDeferred(
+        intentId: String,
+        url: String,
+        carrier: Carrier
+    ): Boolean {
         if (carrier == Carrier.UIDT || carrier == Carrier.FOREGROUND_SERVICE) {
             // 这两种 Carrier 只能延长进程存活；拉起失败（如后台 FGS 限制）时
             // 退回 Worker 自带的执行窗口，任务仍然推进。
@@ -310,6 +411,14 @@ class DownloadRepository @Inject constructor(
 
     fun filePath(task: TaskUi): String = fileOf(task.id, task.sourceUrl).absolutePath
 
+    /** 播放器打开前从 DB 预热覆盖，包含裂解子块；跨进程重启后不能只靠 plan 位图。 */
+    suspend fun warmCoverage(intentId: String) {
+        val target = coverages.computeIfAbsent(intentId) { RangeCoverage() }
+        chunkDao.getByIntent(intentId)
+            .filter { it.state == ChunkState.DONE.name }
+            .forEach { target.add(it.startByte..it.endByte) }
+    }
+
     fun isRangeDownloaded(intentId: String, start: Long, endInclusive: Long): Boolean {
         if (completedIntents.contains(intentId)) return true
         // 播放器可能在「暂停中」或「进程重启后」打开：此时内存覆盖表为空，
@@ -320,7 +429,30 @@ class DownloadRepository @Inject constructor(
         return coverage.covers(start, endInclusive)
     }
 
+    private suspend fun recordEvent(
+        intentId: String,
+        event: String,
+        cause: String?,
+        bytes: Long,
+        startedAt: Long
+    ) {
+        val now = System.currentTimeMillis()
+        runCatching {
+            eventDao.insert(
+                TransferEventEntity(
+                    intentId = intentId,
+                    event = event,
+                    cause = cause,
+                    bytes = bytes.coerceAtLeast(0),
+                    elapsedMs = (now - startedAt).coerceAtLeast(0),
+                    createdAt = now
+                )
+            )
+        }
+    }
+
     private fun buildCoverageFromBitmap(intentId: String): RangeCoverage? {
+        if (completedIntents.contains(intentId)) return RangeCoverage().apply { add(0L..Long.MAX_VALUE) }
         val total = totalSizes[intentId] ?: return null
         val plan = DownloadPlan.create(total)
         val bitmap = bitmaps.load(intentId, plan.chunks.size)
@@ -354,6 +486,10 @@ class DownloadRepository @Inject constructor(
             unlockState.remove(task.id)
             completedIntents.remove(task.id)
             coverages.remove(task.id)
+            progressEmitAt.remove(task.id)
+            speedSamples.remove(task.id)
+            speeds.update { it - task.id }
+            runCatching { eventDao.deleteByIntent(task.id) }
         }
     }
 
@@ -396,7 +532,18 @@ class DownloadRepository @Inject constructor(
     private suspend fun publishCompleted(intentId: String, url: String) {
         val file = fileOf(intentId, url)
         val name = fileNameOf(url)
-        val expected = intentDao.getById(intentId)?.totalSize ?: file.length()
+        val intent = intentDao.getById(intentId) ?: return
+        val expected = intent.totalSize ?: file.length()
+        if (intent.rangeSupported) {
+            val report = CompletionVerifier.verify(
+                totalSize = expected,
+                chunks = chunkDao.getByIntent(intentId),
+                fileLength = file.length()
+            )
+            if (!report.complete) return
+        } else if (file.length() != expected) {
+            return
+        }
         storageTiering.publishToPublic(
             file = file,
             displayName = name,
@@ -473,5 +620,6 @@ class DownloadRepository @Inject constructor(
 
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
+        const val PROGRESS_INTERVAL_MS = 200L
     }
 }

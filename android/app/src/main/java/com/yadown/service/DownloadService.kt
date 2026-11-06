@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.yadown.MainActivity
 import com.yadown.core.repo.DownloadRepository
 import com.yadown.core.repo.TaskUi
@@ -31,7 +33,17 @@ class DownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(NOTIFICATION_ID, buildNotification(emptyList()))
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(emptyList()),
+            type
+        )
         scope.launch {
             repository.observeTasks().collect { tasks ->
                 notify(activeTasks(tasks))
@@ -39,9 +51,15 @@ class DownloadService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        repository.onServiceTimeout()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
 
     override fun onDestroy() {
         scope.cancel()

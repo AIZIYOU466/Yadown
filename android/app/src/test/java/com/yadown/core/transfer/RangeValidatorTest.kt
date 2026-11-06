@@ -135,4 +135,88 @@ class RangeValidatorTest {
             RangeValidator.validate(response(bodyLength = 2048), request, session)
         )
     }
+
+    @Test
+    fun unsatisfiedRangeWithChangedTotal_isContentChanged() {
+        assertInvalid(
+            FailureCause.CONTENT_CHANGED,
+            RangeValidator.validate(
+                response(statusCode = 416, contentRange = "bytes */4096", bodyLength = 0),
+                request,
+                session
+            )
+        )
+    }
+
+    @Test
+    fun unsatisfiedRangeWithSameTotal_isRangeNotSatisfiable() {
+        assertInvalid(
+            FailureCause.RANGE_NOT_SATISFIABLE,
+            RangeValidator.validate(
+                response(statusCode = 416, contentRange = "bytes */2048", bodyLength = 0),
+                request,
+                session
+            )
+        )
+    }
+
+    @Test
+    fun tooManyRequests_isRateLimited() {
+        assertInvalid(
+            FailureCause.RATE_LIMITED,
+            RangeValidator.validate(
+                response(statusCode = 429, contentRange = null, bodyLength = 0),
+                request,
+                session
+            )
+        )
+    }
+
+    @Test
+    fun encodedRangeResponse_isRejected() {
+        assertInvalid(
+            FailureCause.SERVER_SILENT_REJECTION,
+            RangeValidator.validate(
+                response().copy(contentEncoding = "gzip"),
+                request,
+                session
+            )
+        )
+    }
+
+    @Test
+    fun contentRangeTotalDrift_isContentChanged() {
+        assertInvalid(
+            FailureCause.CONTENT_CHANGED,
+            RangeValidator.validate(
+                response(contentRange = "bytes 0-1023/4096"),
+                request,
+                session
+            )
+        )
+    }
+
+    @Test
+    fun weakEtagIsNotUsedAsStrongValidator() {
+        assertInvalid(
+            FailureCause.CONTENT_CHANGED,
+            RangeValidator.validate(
+                response(etag = "W/\"v1\""),
+                request,
+                session
+            )
+        )
+    }
+
+    @Test
+    fun status200WholeFileBodyLengthMismatch_isChecksumMismatch() {
+        assertInvalid(
+            FailureCause.CHECKSUM_MISMATCH,
+            RangeValidator.validate(
+                response(statusCode = 200, contentRange = null, bodyLength = 1000),
+                RangeRequest(0, 2047),
+                session
+            )
+        )
+    }
 }

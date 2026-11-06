@@ -13,7 +13,15 @@ data class RangePayload(
     val statusCode: Int,
     val contentRange: String?,
     val etag: String?,
-    val lastModified: String?
+    val lastModified: String?,
+    val totalSize: Long? = null,
+    val contentEncoding: String? = null,
+    val retryAfterMs: Long? = null
+)
+
+data class SequentialResult(
+    val bytesWritten: Long,
+    val restarted: Boolean
 )
 
 interface RangeSource {
@@ -29,4 +37,27 @@ interface RangeSource {
         endInclusive: Long,
         onProgress: (Long) -> Unit = {}
     ): RangePayload
+
+    /**
+     * 带总大小的 Range 读取：总大小用于判断 200 是否真的覆盖整个文件，
+     * 避免把“服务器忽略 Range 返回全量 body”误当成区间数据。
+     */
+    suspend fun readRangeChecked(
+        url: String,
+        start: Long,
+        endInclusive: Long,
+        totalSize: Long?,
+        onProgress: (Long) -> Unit = {}
+    ): RangePayload = readRange(url, start, endInclusive, onProgress)
+
+    /**
+     * 非 Range 源的顺序读取。默认不支持；实现方负责把字节交给 [onBytes]，
+     * 不要求在内存里缓存整个文件。
+     */
+    suspend fun readSequential(
+        url: String,
+        start: Long,
+        onProgress: (Long) -> Unit,
+        onBytes: (ByteArray) -> Unit
+    ): SequentialResult = throw UnsupportedOperationException("该源不支持顺序读取")
 }

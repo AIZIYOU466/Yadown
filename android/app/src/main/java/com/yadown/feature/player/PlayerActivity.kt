@@ -26,12 +26,19 @@ import com.yadown.core.theme.YadownTheme
 import dagger.hilt.android.AndroidEntryPoint
 import java.io.File
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 @OptIn(ExperimentalMaterial3Api::class)
 class PlayerActivity : ComponentActivity() {
 
     @Inject lateinit var repository: DownloadRepository
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,18 +49,27 @@ class PlayerActivity : ComponentActivity() {
         val intentId = intent.getStringExtra(EXTRA_INTENT_ID).orEmpty()
         val title = intent.getStringExtra(EXTRA_TITLE) ?: "播放"
 
-        setContent {
-            YadownTheme {
-                Scaffold(topBar = { TopAppBar(title = { Text(title) }) }) { padding ->
-                    PlayerScreen(
-                        path = path,
-                        intentId = intentId,
-                        repository = repository,
-                        modifier = Modifier.fillMaxSize().padding(padding)
-                    )
+        // 先预热覆盖再创建播放器，避免跨进程重启后对裂解子块无限等待。
+        scope.launch {
+            runCatching { repository.warmCoverage(intentId) }
+            setContent {
+                YadownTheme {
+                    Scaffold(topBar = { TopAppBar(title = { Text(title) }) }) { padding ->
+                        PlayerScreen(
+                            path = path,
+                            intentId = intentId,
+                            repository = repository,
+                            modifier = Modifier.fillMaxSize().padding(padding)
+                        )
+                    }
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
     }
 
     companion object {

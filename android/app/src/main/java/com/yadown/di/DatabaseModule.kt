@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.yadown.core.db.YadownDatabase
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
+import com.yadown.core.db.dao.TransferEventDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -19,11 +20,16 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): YadownDatabase =
-        Room.databaseBuilder(context, YadownDatabase::class.java, "yadown.db").build()
+        Room.databaseBuilder(context, YadownDatabase::class.java, "yadown.db")
+            .addMigrations(YadownDatabase.MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideIntentDao(db: YadownDatabase): IntentDao = db.intentDao()
 
     @Provides
     fun provideChunkDao(db: YadownDatabase): ChunkDao = db.chunkDao()
+
+    @Provides
+    fun provideTransferEventDao(db: YadownDatabase): TransferEventDao = db.transferEventDao()
 }

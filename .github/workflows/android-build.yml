@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'ci/**' ]
     tags: [ 'v*' ]
   workflow_dispatch:
 
@@ -39,6 +39,9 @@ jobs:
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Compile instrumentation tests
+        run: ./gradlew assembleDebugAndroidTest --no-daemon
 
       - name: Report failed tests
         if: failure()

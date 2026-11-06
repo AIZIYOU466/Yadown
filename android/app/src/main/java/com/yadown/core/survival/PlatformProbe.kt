@@ -30,10 +30,10 @@ data class Reachability(
 object PlatformProbe {
 
     /**
-     * Android 15 (API 35) 起提供 User-installed Downloads Timer：
-     * dataSync 前台服务满足用户主动下载的 UIDT 约束，后台下载不被掐断。
+     * UIDT 是 Android 14（API 34）引入的 JobScheduler 能力，
+     * 需要 RUN_USER_INITIATED_JOBS 权限与 JobService，不是“API 35 起自动获得”。
      */
-    fun isUidtSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA
+    fun isUidtSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
     fun detectRom(): RomType = RomDetector.detect(Build.MANUFACTURER)
 

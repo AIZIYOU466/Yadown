@@ -8,7 +8,10 @@ import com.yadown.core.net.RangePayload
 import com.yadown.core.net.RangeSource
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ValueMap
+import com.yadown.core.telemetry.TransferTelemetry
 import com.yadown.core.survival.FsyncGate
+import java.io.File
+import java.io.RandomAccessFile
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -75,12 +78,28 @@ class DownloadEngine(
         require(concurrency > 0) { "concurrency 必须为正: $concurrency" }
         val intent = intentDao.getById(intentId) ?: error("intent 不存在: $intentId")
         val total = intent.totalSize ?: error("intent 缺少 totalSize: $intentId")
+        val sessionStartedAt = clock()
+        if (!intent.rangeSupported) {
+            downloadSequential(intentId, url, destPath, total, onProgress)
+            return@withContext
+        }
         val plan = DownloadPlan.create(total, chunkSize)
-        val bitmap = bitmaps.load(intentId, plan.chunks.size)
-        val session = RangeSession(intent.etag, intent.lastModified, total)
-
         val dbChunks = chunkDao.getByIntent(intentId)
-        val pending = buildPending(plan, bitmap, dbChunks, valueMap)
+        val fingerprint = PlanFingerprint.of(total, chunkSize)
+        // 位图损坏/指纹不符时不信任空位图，按 DB 的 DONE 重建，避免把洞当成已完成。
+        val bitmap = bitmaps.loadChecked(intentId, plan.chunks.size, fingerprint)
+            ?: ChunkBitmap(plan.chunks.size).also { rebuilt ->
+                dbChunks.asSequence()
+                    .filter { it.state == ChunkState.DONE.name }
+                    .map { parseChunkIndex(it.id) }
+                    .filter { it in 0 until plan.chunks.size }
+                    .forEach { rebuilt.markDone(it) }
+            }
+        reconcileBitmap(plan, dbChunks, bitmap)
+        // 位图是索引而非提交记录，写失败不能阻断下载；DB 仍是 DONE 的权威。
+        runCatching { bitmaps.save(intentId, bitmap, fingerprint) }
+        val session = RangeSession(intent.etag, intent.lastModified, total)
+        val pending = buildPending(plan, dbChunks, valueMap)
         val completed = AtomicLong(dbChunks.filter { it.state == ChunkState.DONE.name }
             .sumOf { it.endByte - it.startByte + 1 })
 
@@ -96,7 +115,9 @@ class DownloadEngine(
 
         val bitmapMutex = Mutex()
         val health = HealthTracker()
-        var nextIndex = plan.chunks.size
+        // 子块 index 必须从持久化的最大值继续；从 plan.chunks.size 重开会覆盖上次会话的子块。
+        var nextIndex = ((dbChunks.maxOfOrNull { parseChunkIndex(it.id) } ?: -1) + 1)
+            .coerceAtLeast(plan.chunks.size)
         var failedOnce = false
         var firstFailure: DownloadException? = null
 
@@ -119,6 +140,7 @@ class DownloadEngine(
                                 chunk = chunk,
                                 session = session,
                                 bitmap = bitmap,
+                                fingerprint = fingerprint,
                                 bitmapMutex = bitmapMutex,
                                 completed = completed,
                                 total = total,
@@ -131,6 +153,7 @@ class DownloadEngine(
                                 if (availability.isAvailable { s, e -> readyRanges.covers(s, e) } &&
                                     availableUnlocked.compareAndSet(false, true)
                                 ) {
+                                    TransferTelemetry.onAvailable(clock() - sessionStartedAt)
                                     onAvailable()
                                 }
                             }
@@ -140,6 +163,7 @@ class DownloadEngine(
                         } catch (e: Exception) {
                             health.recordFailure()
                             val cause = (e as? DownloadException)?.failureCause ?: FailureCause.UNKNOWN
+                            TransferTelemetry.onChunkFailed(cause)
                             Outcome.Failed(chunk, cause, e.message ?: "", retry)
                         }
                         results.send(outcome)
@@ -172,15 +196,50 @@ class DownloadEngine(
         }
 
         if (failedOnce) {
+            if (firstFailure?.failureCause == FailureCause.SERVER_RANGE_UNSUPPORTED) {
+                // 下次用户重试时走顺序下载，而不是继续用 Range 撞墙。
+                intentDao.upsert(intent.copy(rangeSupported = false, updatedAt = clock()))
+            }
             intentDao.updateState(intentId, IntentState.FAILED.name, clock())
             throw firstFailure ?: DownloadException(FailureCause.UNKNOWN, "下载失败")
+        }
+
+        val finalChunks = chunkDao.getByIntent(intentId)
+        val fileLength = File(destPath).length()
+        val report = CompletionVerifier.verify(total, finalChunks, fileLength)
+        if (!report.complete) {
+            markIncompleteForRepair(intentId, total, fileLength, report)
+            intentDao.updateState(intentId, IntentState.FAILED.name, clock())
+            throw DownloadException(
+                FailureCause.INCOMPLETE,
+                "完成校验失败：覆盖 ${report.coveredBytes}/${report.totalBytes}，" +
+                    "缺失 ${report.missing.size} 个区间，文件长度 $fileLength"
+            )
         }
         intentDao.updateState(intentId, IntentState.COMPLETED.name, clock())
     }
 
+    /** 位图必须与 DB 的 DONE 集合同步；位图独有或 DB 独有的位都视为未提交。 */
+    private fun reconcileBitmap(
+        plan: DownloadPlan,
+        dbChunks: List<ChunkEntity>,
+        bitmap: ChunkBitmap
+    ) {
+        val done = dbChunks.asSequence()
+            .filter { it.state == ChunkState.DONE.name }
+            .map { parseChunkIndex(it.id) }
+            .toSet()
+        for (chunk in plan.chunks) {
+            if (chunk.index in done) {
+                bitmap.markDone(chunk.index)
+            } else if (bitmap.isDone(chunk.index)) {
+                bitmap.markPending(chunk.index)
+            }
+        }
+    }
+
     private fun buildPending(
         plan: DownloadPlan,
-        bitmap: ChunkBitmap,
         dbChunks: List<ChunkEntity>,
         valueMap: ValueMap? = null
     ): ArrayDeque<Pair<ChunkRange, Int>> {
@@ -192,7 +251,7 @@ class DownloadEngine(
         for (index in plan.priorityOrder(valueMap)) {
             val entity = byIndex[index] ?: continue
             if (entity.state == ChunkState.DONE.name || entity.state == ChunkState.INVALIDATED.name) continue
-            if (bitmap.isDone(index)) continue
+            // 位图只是索引，不是提交记录：DB 未 DONE 时必须重新下载。
             pending.addLast(ChunkRange(index, entity.startByte, entity.endByte) to entity.retryCount)
         }
 
@@ -226,6 +285,43 @@ class DownloadEngine(
         return ranges
     }
 
+    /**
+     * 完成校验失败时，把与缺失区间重叠的 DONE 分块退回 PENDING，并丢弃位图。
+     * 这样用户重试时真正重下缺失字节，而不是再次被“队列为空”骗过。
+     */
+    private suspend fun markIncompleteForRepair(
+        intentId: String,
+        total: Long,
+        fileLength: Long,
+        report: CompletionReport
+    ) {
+        val repairRanges = report.missing.toMutableList()
+        if (fileLength < total) {
+            repairRanges += fileLength.coerceAtLeast(0)..(total - 1)
+        }
+        if (repairRanges.isEmpty()) return
+
+        chunkDao.getByIntent(intentId)
+            .filter { it.state == ChunkState.DONE.name }
+            .filter { chunk ->
+                repairRanges.any { range ->
+                    range.first <= chunk.endByte && range.last >= chunk.startByte
+                }
+            }
+            .forEach { chunk ->
+                chunkDao.updateProgress(
+                    chunk.id,
+                    ChunkState.PENDING.name,
+                    0,
+                    null,
+                    null,
+                    null,
+                    null
+                )
+            }
+        bitmaps.delete(intentId)
+    }
+
     /** 返回 true 表示已把 chunk 重新排入 pending（裂解或原地重试）；false 表示重试预算耗尽。 */
     private suspend fun handleFailed(
         intentId: String,
@@ -241,8 +337,8 @@ class DownloadEngine(
             return false
         }
 
-        // 内容已变（ETag 漂移）直接整体作废，不再裂解重试。
-        if (cause == FailureCause.CONTENT_CHANGED) {
+        // 终态原因不裂解：裂解只会放大无效请求，不会让 403/416/ENOSPC 变可重试。
+        if (cause == FailureCause.CONTENT_CHANGED || cause in NO_SPLIT_CAUSES) {
             chunkDao.updateState(id, ChunkState.INVALIDATED.name)
             return false
         }
@@ -257,7 +353,7 @@ class DownloadEngine(
                 startByte = split.first.first,
                 endByte = split.first.last,
                 state = ChunkState.PENDING.name,
-                retryCount = 0,
+                retryCount = retryCount + 1,
                 checksum = null,
                 connectionFingerprint = null,
                 failureChainJson = null,
@@ -271,10 +367,10 @@ class DownloadEngine(
             )
             chunkDao.replaceWithChildren(id, childA, childB)
             pending.addLast(
-                ChunkRange(indexA, split.first.first, split.first.last) to retryCount
+                ChunkRange(indexA, split.first.first, split.first.last) to retryCount + 1
             )
             pending.addLast(
-                ChunkRange(indexB, split.second.first, split.second.last) to retryCount
+                ChunkRange(indexB, split.second.first, split.second.last) to retryCount + 1
             )
         } else {
             chunkDao.updateState(id, ChunkState.PENDING.name)
@@ -290,6 +386,7 @@ class DownloadEngine(
         chunk: ChunkRange,
         session: RangeSession,
         bitmap: ChunkBitmap,
+        fingerprint: String,
         bitmapMutex: Mutex,
         completed: AtomicLong,
         total: Long,
@@ -300,7 +397,9 @@ class DownloadEngine(
         val startedAt = clock()
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
-        val payload = readRangeWithWatchdog(url, chunk, startedAt)
+        val payload = TransferLimiter.withPermit(url) {
+            readRangeWithWatchdog(url, chunk, startedAt, total)
+        }
 
         val validation = RangeValidator.validate(
             RangeResponse(
@@ -323,23 +422,23 @@ class DownloadEngine(
             }
 
             ValidationResult.Valid -> {
+                val checksum = XxHash64.hash(payload.bytes)
                 files.withFile(destPath) { raf ->
                     raf.seek(chunk.start)
                     raf.write(payload.bytes)
-                    val nowMs = clock()
-                    if (fsyncGate.shouldFsync(nowMs)) {
-                        raf.fd.sync()
-                        fsyncGate.markFsynced(nowMs)
-                    }
+                    // DONE 之前数据必须已持久；先保证正确性，后续再做分组提交优化。
+                    raf.fd.sync()
+                    fsyncGate.markFsynced(clock())
                 }
                 bitmapMutex.withLock {
                     // 裂解产生的子 chunk index 超出原始位图，完成状态由 DB 记录。
                     if (chunk.index < bitmap.totalChunks) {
                         bitmap.markDone(chunk.index)
-                        bitmaps.save(intentId, bitmap)
+                        bitmaps.save(intentId, bitmap, fingerprint)
                     }
                 }
-                chunkDao.updateProgress(id, ChunkState.DONE.name, 0, startedAt, clock(), null, null)
+                chunkDao.updateProgress(id, ChunkState.DONE.name, 0, startedAt, clock(), checksum, null)
+                TransferTelemetry.onChunkDone(chunk.length())
                 onProgress(DownloadProgress(completed.addAndGet(chunk.length()), total))
                 onChunkDone(chunk)
             }
@@ -353,7 +452,8 @@ class DownloadEngine(
     private suspend fun readRangeWithWatchdog(
         url: String,
         chunk: ChunkRange,
-        startedAt: Long
+        startedAt: Long,
+        totalSize: Long
     ): RangePayload {
         val watchdog = StallWatchdog(
             timeoutMs = StallWatchdog.DEFAULT_TIMEOUT_MS,
@@ -362,7 +462,7 @@ class DownloadEngine(
         val stalled = AtomicBoolean(false)
         return coroutineScope {
             val work = async(ioDispatcher) {
-                source.readRange(url, chunk.start, chunk.endInclusive) { _ ->
+                source.readRangeChecked(url, chunk.start, chunk.endInclusive, totalSize) { _ ->
                     watchdog.onProgress(clock())
                 }
             }
@@ -390,6 +490,49 @@ class DownloadEngine(
         }
     }
 
+    /** 非 Range 源的顺序下载：单流落盘，不从内存缓存整个文件；断点续传退化为从头开始。 */
+    private suspend fun downloadSequential(
+        intentId: String,
+        url: String,
+        destPath: String,
+        total: Long,
+        onProgress: (DownloadProgress) -> Unit
+    ) {
+        val file = File(destPath)
+        file.parentFile?.mkdirs()
+        onProgress(DownloadProgress(0, total))
+
+        try {
+            RandomAccessFile(file, "rw").use { raf ->
+                raf.setLength(0)
+                source.readSequential(
+                    url = url,
+                    start = 0L,
+                    onProgress = { written -> onProgress(DownloadProgress(written, total)) }
+                ) { bytes -> raf.write(bytes) }
+                raf.fd.sync()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            intentDao.updateState(intentId, IntentState.FAILED.name, clock())
+            throw DownloadException(
+                FailureCause.SERVER_SILENT_REJECTION,
+                "顺序下载失败: ${e.message}"
+            )
+        }
+
+        val length = file.length()
+        if (length != total) {
+            intentDao.updateState(intentId, IntentState.FAILED.name, clock())
+            throw DownloadException(
+                FailureCause.INCOMPLETE,
+                "顺序下载完成但长度 $length != $total"
+            )
+        }
+        intentDao.updateState(intentId, IntentState.COMPLETED.name, clock())
+    }
+
     private fun chunkId(intentId: String, index: Int): String = "$intentId-$index"
 
     private fun parseChunkIndex(id: String): Int =
@@ -398,5 +541,12 @@ class DownloadEngine(
     companion object {
         private const val WATCHDOG_POLL_MS = 500L
         private const val DEFAULT_STORAGE_IOPS = 3_000
+        private val NO_SPLIT_CAUSES = setOf(
+            FailureCause.SERVER_RANGE_UNSUPPORTED,
+            FailureCause.RANGE_NOT_SATISFIABLE,
+            FailureCause.STORAGE_FULL,
+            FailureCause.STORAGE_UNREACHABLE,
+            FailureCause.TLS_HANDSHAKE_FAILED
+        )
     }
 }

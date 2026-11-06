@@ -9,6 +9,7 @@ enum class RecoveryAction {
     PAUSE_WAIT_STORAGE,
     PAUSE_NOTIFY_USER,
     REGRANT_PERMISSIONS,
+    SEQUENTIAL_FALLBACK,
     NONE
 }
 
@@ -32,11 +33,13 @@ object FailureRecovery {
 
             // 文档恢复表未显式列出的归因，按语义补全（扩展表见 ARCHITECTURE §4）。
             FailureCause.TLS_HANDSHAKE_FAILED -> RecoveryAction.RETRY_BACKOFF
-            FailureCause.SERVER_RANGE_UNSUPPORTED -> RecoveryAction.REDUCE_CONCURRENCY_SWITCH_SOURCE
+            FailureCause.SERVER_RANGE_UNSUPPORTED -> RecoveryAction.SEQUENTIAL_FALLBACK
+            FailureCause.RANGE_NOT_SATISFIABLE -> RecoveryAction.RETRY_BACKOFF
             FailureCause.CHECKSUM_MISMATCH -> RecoveryAction.RETRY_BACKOFF
             FailureCause.RATE_LIMITED -> RecoveryAction.RETRY_BACKOFF
             FailureCause.BUDGET_EXCEEDED -> RecoveryAction.PAUSE_NOTIFY_USER
             FailureCause.PEER_UNAVAILABLE -> RecoveryAction.REDUCE_CONCURRENCY_SWITCH_SOURCE
+            FailureCause.INCOMPLETE -> RecoveryAction.NONE
             FailureCause.UNKNOWN -> RecoveryAction.RETRY_BACKOFF
 
             null -> RecoveryAction.NONE

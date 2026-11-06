@@ -24,12 +24,16 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=0-0")
+            .header("Accept-Encoding", "identity")
             .build()
         client.newCall(request).executeSuspend().use { response ->
             val contentRange = response.header("Content-Range")
+            val totalFromRange = parseTotalSize(contentRange)
+            // `bytes 0-0/*` 表示总大小未知；此时不能退回 Content-Length（那是 1 字节）。
+            val total = totalFromRange
+                ?: if (contentRange == null) response.header("Content-Length")?.toLongOrNull() else null
             ProbeResult(
-                totalSize = parseTotalSize(contentRange)
-                    ?: response.header("Content-Length")?.toLongOrNull(),
+                totalSize = total,
                 rangeSupported = response.code == 206,
                 etag = response.header("ETag"),
                 lastModified = response.header("Last-Modified"),
@@ -43,54 +47,178 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         start: Long,
         endInclusive: Long,
         onProgress: (Long) -> Unit
+    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress)
+
+    override suspend fun readRangeChecked(
+        url: String,
+        start: Long,
+        endInclusive: Long,
+        totalSize: Long?,
+        onProgress: (Long) -> Unit
     ): RangePayload = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=$start-$endInclusive")
+            .header("Accept-Encoding", "identity")
             .build()
-        val call = client.newCall(request)
-        // executeSuspend 保证协程取消时调用 call.cancel()，中断阻塞中的 body 读取。
-        call.executeSuspend().use { response ->
-            val body = response.body
-            if (body == null) {
-                RangePayload(
-                    bytes = ByteArray(0),
-                    statusCode = response.code,
-                    contentRange = response.header("Content-Range"),
-                    etag = response.header("ETag"),
-                    lastModified = response.header("Last-Modified")
-                )
-            } else {
-                val source = body.source()
-                val buffer = ByteArray(READ_BUFFER_SIZE)
-                val out = ByteArrayOutputStream()
-                var totalRead = 0L
-                while (true) {
-                    val n = source.read(buffer)
-                    if (n < 0) break
-                    out.write(buffer, 0, n)
-                    totalRead += n
-                    onProgress(totalRead)
+
+        client.newCall(request).executeSuspend().use { response ->
+            val contentRange = response.header("Content-Range")
+            val etag = response.header("ETag")
+            val lastModified = response.header("Last-Modified")
+            val contentEncoding = response.header("Content-Encoding")
+
+            when (response.code) {
+                206 -> {
+                    if (!contentRangeMatches(contentRange, start, endInclusive)) {
+                        payload(ByteArray(0), response, contentRange, etag, lastModified, contentEncoding)
+                    } else {
+                        val expected = endInclusive - start + 1
+                        val bytes = readCapped(response, expected, onProgress)
+                        payload(bytes, response, contentRange, etag, lastModified, contentEncoding)
+                    }
                 }
-                RangePayload(
-                    bytes = out.toByteArray(),
-                    statusCode = response.code,
-                    contentRange = response.header("Content-Range"),
-                    etag = response.header("ETag"),
-                    lastModified = response.header("Last-Modified")
+
+                200 -> {
+                    // 只有确实覆盖整个文件时才允许把 200 当数据；否则立即关闭响应，绝不读全量 body。
+                    val coversWholeFile = totalSize != null &&
+                        start == 0L && endInclusive >= totalSize - 1
+                    if (!coversWholeFile) {
+                        payload(ByteArray(0), response, contentRange, etag, lastModified, contentEncoding)
+                    } else {
+                        val bytes = readCapped(response, totalSize!!, onProgress)
+                        payload(bytes, response, contentRange, etag, lastModified, contentEncoding)
+                    }
+                }
+
+                429 -> payload(
+                    bytes = ByteArray(0),
+                    response = response,
+                    contentRange = contentRange,
+                    etag = etag,
+                    lastModified = lastModified,
+                    contentEncoding = contentEncoding,
+                    retryAfterMs = parseRetryAfter(response.header("Retry-After"))
+                )
+
+                else -> payload(
+                    ByteArray(0),
+                    response,
+                    contentRange,
+                    etag,
+                    lastModified,
+                    contentEncoding
                 )
             }
         }
     }
 
+    override suspend fun readSequential(
+        url: String,
+        start: Long,
+        onProgress: (Long) -> Unit,
+        onBytes: (ByteArray) -> Unit
+    ): SequentialResult = withContext(Dispatchers.IO) {
+        val builder = Request.Builder()
+            .url(url)
+            .header("Accept-Encoding", "identity")
+        if (start > 0) builder.header("Range", "bytes=$start-")
+        val request = builder.build()
+
+        client.newCall(request).executeSuspend().use { response ->
+            if (response.code !in 200..299) {
+                throw IOException("顺序读取失败: HTTP ${response.code}")
+            }
+            val encoding = response.header("Content-Encoding")
+            if (encoding != null && !encoding.equals("identity", true)) {
+                throw IOException("顺序下载收到 Content-Encoding=$encoding，字节长度不可信")
+            }
+            val body = response.body ?: throw IOException("响应没有 body")
+            val source = body.source()
+            val buffer = ByteArray(READ_BUFFER_SIZE * 4)
+            var written = 0L
+            while (true) {
+                val n = source.read(buffer)
+                if (n < 0) break
+                if (n == 0) continue
+                onBytes(buffer.copyOf(n))
+                written += n
+                onProgress(written)
+            }
+            SequentialResult(
+                bytesWritten = written,
+                restarted = response.code == 200 && start > 0
+            )
+        }
+    }
+
+    /**
+     * 只读取期望长度 + 1 字节：多读的这一字节用于让校验器发现“服务器返回超长 body”，
+     * 同时保证内存上限是一个分块而不是整个文件。
+     */
+    private fun readCapped(
+        response: Response,
+        expected: Long,
+        onProgress: (Long) -> Unit
+    ): ByteArray {
+        val body = response.body ?: return ByteArray(0)
+        val source = body.source()
+        val limit = expected + 1
+        val out = ByteArrayOutputStream(minOf(expected, MAX_BUFFER).toInt())
+        val buffer = ByteArray(READ_BUFFER_SIZE)
+        var total = 0L
+
+        while (total < limit) {
+            val want = minOf(buffer.size.toLong(), limit - total).toInt()
+            if (want <= 0) break
+            val n = source.read(buffer, 0, want)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            total += n
+            onProgress(total)
+        }
+        return out.toByteArray()
+    }
+
+    private fun payload(
+        bytes: ByteArray,
+        response: Response,
+        contentRange: String?,
+        etag: String?,
+        lastModified: String?,
+        contentEncoding: String?,
+        retryAfterMs: Long? = null
+    ): RangePayload = RangePayload(
+        bytes = bytes,
+        statusCode = response.code,
+        contentRange = contentRange,
+        etag = etag,
+        lastModified = lastModified,
+        totalSize = parseTotalSize(contentRange),
+        contentEncoding = contentEncoding,
+        retryAfterMs = retryAfterMs
+    )
+
+    private fun contentRangeMatches(value: String?, start: Long, endInclusive: Long): Boolean {
+        val match = CONTENT_RANGE.matchEntire(value?.trim() ?: return false) ?: return false
+        val (rangeStart, rangeEnd) = match.destructured
+        return rangeStart.toLongOrNull() == start && rangeEnd.toLongOrNull() == endInclusive
+    }
+
     private fun parseTotalSize(contentRange: String?): Long? {
-        val match = Regex("""bytes\s+\d+-\d+/(\d+)""")
-            .matchEntire(contentRange?.trim() ?: return null) ?: return null
-        return match.groupValues[1].toLongOrNull()
+        val match = CONTENT_RANGE.matchEntire(contentRange?.trim() ?: return null) ?: return null
+        return match.groupValues[3].toLongOrNull()
+    }
+
+    private fun parseRetryAfter(value: String?): Long? {
+        val seconds = value?.trim()?.toLongOrNull() ?: return null
+        return (seconds * 1000).coerceAtLeast(0)
     }
 
     companion object {
         private const val READ_BUFFER_SIZE = 8 * 1024
+        private const val MAX_BUFFER = 4L * 1024 * 1024
+        private val CONTENT_RANGE = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""")
 
         /** 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。 */
         fun createClient(readTimeoutMs: Long = 20_000): OkHttpClient =

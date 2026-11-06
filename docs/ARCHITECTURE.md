@@ -12,6 +12,17 @@
 4. **关键机制**：位图意图 + 交叉校验、动态裂解、四重 Range 校验、UIDT、ROM 感知。
 5. **代价承诺**：长期维护语义解析矩阵 + ROM 适配矩阵。
 
+### 0.1 正确性不变量（实现验收标准）
+
+以下六条优先于任何性能/功能目标，未满足即不算完成：
+
+1. **I1 完成谓词**：`COMPLETED` 当且仅当 DB 中 DONE 分块覆盖 `[0,totalSize)` 且文件长度足够；队列为空不算完成。裂解子块与原始计划块一视同仁。
+2. **I2 提交顺序**：数据 `fdatasync` → 位图原子替换 + 目录 fsync → DB 事务提交；任何一步失败都不能产生“DB 说完成、文件没有”的状态。
+3. **I3 终止性**：裂解有深度/重试预算，终态原因（403/416/ENOSPC/TLS/Content-Encoding 等）不裂解；单分块请求数有上界。
+4. **I4 协议先行**：先校验 HTTP 状态、Content-Range、Content-Length，再读 body；body 读取有硬上限；非 Range 源走单流顺序回退。
+5. **I5 身份与版本**：位图绑定 plan fingerprint；DB 是 DONE 的唯一提交记录；启动时做 DB/位图/文件三真相对账。
+6. **I6 平台闭环**：dataSync 前台服务必须实现 `onTimeout`；UIDT 按 Android 14+ JobScheduler 实现；peer 传输必须先有信任模型，不允许明文 HTTP。
+
 ---
 
 ## 1. 架构总览
@@ -189,8 +200,8 @@ CREATE TABLE platform_capability (
 - `RUNNING → FAILED`：stall watchdog（20s 无字节到达）触发，或网络错误
 - `FAILED → PENDING`：retry_count < 3
 - `FAILED → INVALIDATED`：retry_count ≥ 3
-- `INVALIDATED → PENDING`：换源后重新调度
-- `DONE → PENDING`：恢复时交叉校验发现文件对应区间为空
+- `DONE → PENDING`：恢复时交叉校验发现文件对应区间为空，或完成校验发现覆盖/长度不成立
+- `INVALIDATED → PENDING`：仅由用户主动重试或修复流程触发；进程自动续传不重置，避免失败任务无限复活
 
 ### 3.2 Intent 状态机
 
@@ -215,7 +226,8 @@ enum class FailureCause {
     TLS_HANDSHAKE_FAILED,
     PRIVATE_APN_DETECTED,        // 目标级可达性探测失败
     SERVER_RANGE_UNSUPPORTED,
-    SERVER_SILENT_REJECTION,     // 200+空body
+    RANGE_NOT_SATISFIABLE,       // 416
+    SERVER_SILENT_REJECTION,     // 200+空body/非预期状态
     CONTENT_CHANGED,             // ETag不匹配
     CHECKSUM_MISMATCH,
     STORAGE_UNREACHABLE,         // SD卡移除/目录不可写
@@ -224,6 +236,7 @@ enum class FailureCause {
     RATE_LIMITED,
     BUDGET_EXCEEDED,
     PEER_UNAVAILABLE,
+    INCOMPLETE,                  // 完成校验未覆盖全部字节
     UNKNOWN
 }
 
@@ -252,8 +265,9 @@ data class FailureChain(
 | 归因链首因 | 恢复动作 |
 |---|---|
 | TLS_HANDSHAKE_FAILED | RETRY_BACKOFF |
-| SERVER_RANGE_UNSUPPORTED | REDUCE_CONCURRENCY_SWITCH_SOURCE |
-| CHECKSUM_MISMATCH | RETRY_BACKOFF |
+| SERVER_RANGE_UNSUPPORTED | SEQUENTIAL_FALLBACK（单流顺序下载；不裂解） |
+| CHECKSUM_MISMATCH | RETRY_BACKOFF（重下该分块） |
+| RANGE_NOT_SATISFIABLE | RETRY_BACKOFF（先校验 total 是否漂移） |
 | RATE_LIMITED | RETRY_BACKOFF |
 | BUDGET_EXCEEDED | PAUSE_NOTIFY_USER |
 | PEER_UNAVAILABLE | REDUCE_CONCURRENCY_SWITCH_SOURCE |
@@ -366,9 +380,17 @@ fun adjustDispatcher(health: Float, storageIops: Int) {
 
 **RangeValidator 四重校验**：
 1. HTTP 状态码是否 206（或 200 单块退化为顺序传输）
-2. `Content-Range` 与请求 Range 是否一致
-3. `ETag` / `Last-Modified` 与会话起始值是否一致（防内容漂移）
+2. `Content-Range` 与请求 Range 是否一致，且 total 不能漂移
+3. `ETag` / `Last-Modified` 与会话起始值是否一致（防内容漂移；弱 ETag 不能作为强校验器）
 4. body 实际字节数与声明区间长度是否一致（防截断/空 body）
+
+**实现约束（2026-11 补充）**：
+
+- 200 只允许“请求覆盖整个文件”时读取；部分区间返回 200 时立即关闭响应，绝不先读全量 body。
+- `206` 读取上限为 `expected + 1` 字节；多读的 1 字节只用于发现超长 body，避免把整文件读进内存。
+- `416` 校验 `bytes */total` 是否漂移；`429` 读 `Retry-After` 并归因 `RATE_LIMITED`；`Content-Encoding` 非 identity 直接拒绝。
+- 非 Range 源、或中途确认不支持 Range 的任务，下一次重试走 `SequentialDownloader`，按文件长度续传；不能续传时明确从头开始。
+- `If-Range` 目前采用事后 ETag 校验而非请求头；这是效率优化，不改变正确性，后续可加。
 
 ### 5.4 L4 系统生存层
 
@@ -403,6 +425,12 @@ interface PlatformAdapter {
 | 可延迟的后台补齐 | WORK_MANAGER |
 | Doze 状态 | DOZE_STOPPED（保存位图） |
 
+**平台约束（2026-11 补充）**：
+
+- target 35+ 的 `dataSync` 前台服务在 24 小时内累计 6 小时后会收到 `Service.onTimeout`；必须保存状态并 `stopSelf()`，否则系统抛 `RemoteServiceException`。
+- UIDT 是 Android 14（API 34）的 JobScheduler 能力，需要 `RUN_USER_INITIATED_JOBS` + `JobService` + `setUserInitiated(true)`；不是 API 35 自动获得，也不是 FGS 的别名。
+- target 28+ 默认禁止明文流量；L2 的局域网 peer 必须先定义 HTTPS/内容签名的信任模型，禁止直接用明文 HTTP。
+
 ---
 
 ## 6. 可观测指标
@@ -410,7 +438,10 @@ interface PlatformAdapter {
 | 指标 | 定义 | 目标 | 用途 |
 |---|---|---|---|
 | Time-to-First-Playable | 从开始下载到可播放的时间 | < 10s（10Mbps） | 核心产品指标 |
-| Time-to-First-Launchable | APK 可启动时间 | < 30s（10Mbps） | 核心产品指标 |
+| Time-to-First-Launchable | APK 可启动时间 | 第三方应用不可兑现；仅在系统应用或“下完即装”路径测量 | 参考指标，非核心承诺 |
+| Completion Integrity Rate | COMPLETED 任务中通过覆盖+长度+校验的比例 | 100% | 正确性指标 |
+| Request Amplification Bound | 单分块失败路径的最大请求数 | ≤ 15（1MB 分块，预算内） | 终止性指标 |
+| Crash Recovery Correctness | 断点杀进程后完成校验通过率 | 100% | 崩溃一致性指标 |
 | 分块恢复成功率 | 中断后从位图恢复且不重传已完成分块的比率 | > 99.9% | 可靠性指标 |
 | 单次会话有效率 | 完成字节 / 消耗流量 | > 0.95 | 流量效率 |
 | Stall 率 | 触发 20s 无进展超时的分块比率 | < 1% | 网络健康 |
@@ -444,6 +475,8 @@ interface PlatformAdapter {
 | Android 12 以下 APK 流式安装有可行降级 | 测试"先下完再安装"的体验损失 | APK 流式安装仅支持 Android 12+ |
 
 这三个假设的验证必须在 P1 开始前完成。它们不改变架构骨架，但会改变 L1 和 L2 的实现范围。
+
+> 2026-11 执行状态：P0 仍待真机回填；P1/P2/P3 已按正确性脊柱先行落地。L2 在 P0/P5 通过前不进入实现，也不计入当前架构能力。
 
 ---
 

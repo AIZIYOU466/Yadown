@@ -1,11 +1,13 @@
 package com.yadown.core.player
 
 import android.net.Uri
+import android.os.SystemClock
 import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 
 /**
@@ -21,10 +23,12 @@ class DownloadingDataSource(
     private lateinit var file: File
     private var position = 0L
     private var bytesRemaining = 0L
+    private var waitStartedAtMs = 0L
 
     override fun open(dataSpec: DataSpec): Long {
         file = File(filePath)
         position = dataSpec.position
+        waitStartedAtMs = SystemClock.elapsedRealtime()
         val available = maxOf(0L, file.length() - position)
         bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
             dataSpec.length
@@ -40,6 +44,12 @@ class DownloadingDataSource(
         val end = position + toRead - 1
         // 未下载则等待；下载引擎在后台持续推进，就绪后立即返回。
         while (!isDownloaded(intentId, position, end)) {
+            if (Thread.currentThread().isInterrupted) {
+                throw IOException("播放已取消")
+            }
+            if (SystemClock.elapsedRealtime() - waitStartedAtMs > MAX_WAIT_MS) {
+                throw IOException("等待下载超时，任务可能已暂停或失败")
+            }
             Thread.sleep(POLL_INTERVAL_MS)
         }
         RandomAccessFile(file, "r").use { raf ->
@@ -58,6 +68,7 @@ class DownloadingDataSource(
 
     private companion object {
         const val POLL_INTERVAL_MS = 150L
+        const val MAX_WAIT_MS = 30_000L
     }
 }
 

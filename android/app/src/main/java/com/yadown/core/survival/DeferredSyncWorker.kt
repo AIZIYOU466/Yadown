@@ -33,12 +33,15 @@ class DeferredSyncWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         val intentId = inputData.getString(KEY_INTENT_ID) ?: return Result.failure()
         val url = inputData.getString(KEY_URL) ?: return Result.failure()
+        // 永久失败（404/403/存储满）不能无限重试；交给用户或下次显式启动。
+        if (runAttemptCount >= MAX_ATTEMPTS) return Result.failure()
         return DeferredSyncRunner.resume(intentId, url)
     }
 
     companion object {
         const val KEY_INTENT_ID = "deferred.intentId"
         const val KEY_URL = "deferred.url"
+        private const val MAX_ATTEMPTS = 5
 
         private const val UNIQUE_PREFIX = "yadown-deferred-"
 
@@ -81,11 +84,23 @@ object DeferredSyncRunner {
         suspend fun resume(intentId: String, url: String): Boolean
     }
 
+    fun interface DirectRunner {
+        suspend fun resumeDirect(intentId: String, url: String): Boolean
+    }
+
     @Volatile
     private var runner: Runner? = null
 
+    @Volatile
+    private var directRunner: DirectRunner? = null
+
     fun install(runner: Runner) {
         this.runner = runner
+    }
+
+    /** UIDT 执行入口：必须是“只执行、不再调度”的实现。 */
+    fun installDirect(runner: DirectRunner) {
+        this.directRunner = runner
     }
 
     suspend fun resume(intentId: String, url: String): ListenableWorker.Result {
@@ -96,4 +111,8 @@ object DeferredSyncRunner {
             ListenableWorker.Result.retry()
         }
     }
+
+    /** 供 UIDT JobService 使用的直接入口，不包装成 WorkManager 的 Result。 */
+    suspend fun resumeNow(intentId: String, url: String): Boolean =
+        directRunner?.resumeDirect(intentId, url) ?: false
 }

@@ -8,6 +8,7 @@ class StallWatchdog(
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     startAtMs: Long = 0L
 ) {
+    @Volatile
     var lastProgressAtMs: Long = startAtMs
         private set
 
