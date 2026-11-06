@@ -4,7 +4,9 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.yadown.core.db.entity.ChunkEntity
+import com.yadown.core.transfer.ChunkState
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -41,4 +43,18 @@ interface ChunkDao {
 
     @Query("DELETE FROM chunks WHERE intent_id = :intentId")
     suspend fun deleteByIntent(intentId: String)
+
+    @Query("UPDATE chunks SET state = :state WHERE id = :id")
+    suspend fun updateState(id: String, state: String)
+
+    /**
+     * 动态裂解的原子事务：原 chunk 标记 INVALIDATED，两个子 chunk 入队。
+     * 在单个 Room 事务内完成，裂解过程掉电/崩溃不会出现重叠区间。
+     */
+    @Transaction
+    suspend fun replaceWithChildren(oldId: String, childA: ChunkEntity, childB: ChunkEntity) {
+        updateState(oldId, ChunkState.INVALIDATED.name)
+        upsert(childA)
+        upsert(childB)
+    }
 }

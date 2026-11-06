@@ -30,10 +30,49 @@ class DownloadEngineTest {
     ) : RangeSource {
         override suspend fun probe(url: String) = ProbeResult(total, true, etag, null, null)
 
-        override suspend fun readRange(url: String, start: Long, endInclusive: Long): RangePayload {
+        override suspend fun readRange(
+            url: String,
+            start: Long,
+            endInclusive: Long,
+            onProgress: (Long) -> Unit
+        ): RangePayload {
             val requested = (endInclusive - start + 1).toInt()
             val len = (requested + failLengthDelta).coerceAtLeast(0)
             val bytes = ByteArray(len) { i -> ((start + i) % 251).toByte() }
+            return RangePayload(
+                bytes = bytes,
+                statusCode = 206,
+                contentRange = "bytes $start-$endInclusive/$total",
+                etag = etag,
+                lastModified = null
+            )
+        }
+    }
+
+    /** 第一次 readRange 返回短 body（校验失败，触发裂解重试），之后全部正常。 */
+    private class FlakySource(private val total: Long, private val etag: String?) : RangeSource {
+        private var first = true
+
+        override suspend fun probe(url: String) = ProbeResult(total, true, etag, null, null)
+
+        override suspend fun readRange(
+            url: String,
+            start: Long,
+            endInclusive: Long,
+            onProgress: (Long) -> Unit
+        ): RangePayload {
+            val requested = (endInclusive - start + 1).toInt()
+            if (first) {
+                first = false
+                return RangePayload(
+                    bytes = ByteArray(requested - 1),
+                    statusCode = 206,
+                    contentRange = "bytes $start-$endInclusive/$total",
+                    etag = etag,
+                    lastModified = null
+                )
+            }
+            val bytes = ByteArray(requested) { i -> ((start + i) % 251).toByte() }
             return RangePayload(
                 bytes = bytes,
                 statusCode = 206,
@@ -107,6 +146,16 @@ class DownloadEngineTest {
 
         override suspend fun deleteByIntent(intentId: String) {
             map.entries.removeIf { it.value.intentId == intentId }
+        }
+
+        override suspend fun updateState(id: String, state: String) {
+            map[id] = map[id]?.copy(state = state) ?: return
+        }
+
+        override suspend fun replaceWithChildren(oldId: String, childA: ChunkEntity, childB: ChunkEntity) {
+            map[oldId] = map[oldId]?.copy(state = ChunkState.INVALIDATED.name) ?: return
+            map[childA.id] = childA
+            map[childB.id] = childB
         }
     }
 
@@ -209,13 +258,12 @@ class DownloadEngineTest {
             chunkSize = 4
         )
 
-        // 第一次保存的位图只有 chunk 0 完成，其余由引擎补完。
         assertTrue(bitmapStore.load("i1", 3).allDone())
         assertEquals(IntentState.COMPLETED.name, intentDao.getById("i1")!!.state)
     }
 
     @Test
-    fun invalidBodyLengthFailsWithDownloadException() = runTest {
+    fun persistentBodyLengthMismatchFailsIntent() = runTest {
         val source = FakeSource(10, etag = "\"v1\"", failLengthDelta = 1)
         val intentDao = FakeIntentDao()
         val chunkDao = FakeChunkDao()
@@ -235,6 +283,38 @@ class DownloadEngineTest {
 
         assertTrue("expected DownloadException, got $error", error is DownloadException)
         assertEquals(FailureCause.CHECKSUM_MISMATCH, (error as DownloadException).failureCause)
-        assertEquals(1, chunkDao.countByState("i1", ChunkState.FAILED.name))
+        assertEquals(IntentState.FAILED.name, intentDao.getById("i1")!!.state)
+        assertTrue(
+            "存在 INVALIDATED 分块",
+            chunkDao.countByState("i1", ChunkState.INVALIDATED.name) > 0
+        )
+    }
+
+    @Test
+    fun transientFailureSplitsChunkAndStillCompletes() = runTest {
+        val total = 10L
+        val source = FlakySource(total, etag = "\"v1\"")
+        val bitmapStore = InMemoryBitmapStore()
+        val intentDao = FakeIntentDao()
+        val chunkDao = FakeChunkDao()
+        intentDao.upsert(intent(total, "\"v1\""))
+        seedChunks(chunkDao, total, 4)
+        val file = tmp.newFile()
+
+        engine(source, bitmapStore, intentDao, chunkDao).download(
+            intentId = "i1",
+            url = "https://example.com/file",
+            destPath = file.absolutePath,
+            concurrency = 1,
+            chunkSize = 4
+        )
+
+        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9).map { it.toByte() }, file.readBytes().toList())
+        assertTrue(bitmapStore.load("i1", 3).allDone())
+        assertEquals(IntentState.COMPLETED.name, intentDao.getById("i1")!!.state)
+        assertTrue(
+            "原 chunk 被裂解标记 INVALIDATED",
+            chunkDao.countByState("i1", ChunkState.INVALIDATED.name) >= 1
+        )
     }
 }

@@ -18,5 +18,15 @@ data class RangePayload(
 
 interface RangeSource {
     suspend fun probe(url: String): ProbeResult
-    suspend fun readRange(url: String, start: Long, endInclusive: Long): RangePayload
+
+    /**
+     * 读取指定 Range。[onProgress] 在收到字节时回调累计字节数（供 stall 检测），
+     * 协程取消时应中断底层请求（可取消）。
+     */
+    suspend fun readRange(
+        url: String,
+        start: Long,
+        endInclusive: Long,
+        onProgress: (Long) -> Unit = {}
+    ): RangePayload
 }

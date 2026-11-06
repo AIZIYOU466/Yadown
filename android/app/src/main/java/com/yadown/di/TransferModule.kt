@@ -25,7 +25,7 @@ object TransferModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient = OkHttpClient.Builder().build()
+    fun provideOkHttpClient(): OkHttpClient = OkHttpRangeSource.createClient()
 
     @Provides
     @Singleton
