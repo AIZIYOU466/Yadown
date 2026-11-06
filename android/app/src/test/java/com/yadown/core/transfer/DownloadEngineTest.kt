@@ -230,7 +230,7 @@ class DownloadEngineTest {
         }.exceptionOrNull()
 
         assertTrue("expected DownloadException, got $error", error is DownloadException)
-        assertEquals(FailureCause.CHECKSUM_MISMATCH, (error as DownloadException).cause)
+        assertEquals(FailureCause.CHECKSUM_MISMATCH, (error as DownloadException).failureCause)
         assertEquals(1, chunkDao.countByState("i1", ChunkState.FAILED.name))
     }
 }

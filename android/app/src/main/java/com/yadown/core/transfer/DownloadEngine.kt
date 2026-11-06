@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 data class DownloadProgress(val downloadedBytes: Long, val totalBytes: Long)
 
-class DownloadException(val cause: FailureCause, val detail: String) : Exception(detail)
+class DownloadException(val failureCause: FailureCause, val detail: String) : Exception(detail)
 
 class DownloadEngine(
     private val source: RangeSource,
