@@ -5,11 +5,11 @@ package com.yadown.core.survival
  * 目标：64 并发下 fdatasync 次数 < 每 2 秒 1 次（见 docs/ARCHITECTURE.md §T2.5）。
  */
 class FsyncGate(private val minIntervalMs: Long = DEFAULT_INTERVAL_MS) {
-    private var lastFsyncAt = 0L
+    private var lastFsyncAt = NEVER
 
     @Synchronized
     fun shouldFsync(nowMs: Long): Boolean =
-        lastFsyncAt == 0L || nowMs - lastFsyncAt >= minIntervalMs
+        lastFsyncAt == NEVER || nowMs - lastFsyncAt >= minIntervalMs
 
     @Synchronized
     fun markFsynced(nowMs: Long) {
@@ -18,5 +18,6 @@ class FsyncGate(private val minIntervalMs: Long = DEFAULT_INTERVAL_MS) {
 
     companion object {
         const val DEFAULT_INTERVAL_MS = 2_000L
+        private const val NEVER = Long.MIN_VALUE
     }
 }
