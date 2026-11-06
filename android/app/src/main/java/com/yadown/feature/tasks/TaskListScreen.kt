@@ -1,5 +1,6 @@
 package com.yadown.feature.tasks
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,6 +47,7 @@ import com.yadown.core.theme.Spacing
 import com.yadown.core.theme.semanticColors
 import com.yadown.core.transfer.IntentState
 import com.yadown.feature.p0.P0ProbeScreen
+import com.yadown.feature.player.PlayerActivity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -189,10 +191,23 @@ private fun TaskCard(
                 )
                 Row {
                     if (task.state == IntentState.COMPLETED.name) {
+                        val isApk = task.fileName.endsWith(".apk", ignoreCase = true)
+                        val isVideo = task.fileName.endsWith(".mp4", ignoreCase = true)
                         TextButton(onClick = {
-                            runCatching { context.startActivity(viewModel.openIntent(task)) }
+                            runCatching {
+                                if (isVideo) {
+                                    context.startActivity(
+                                        Intent(context, PlayerActivity::class.java).apply {
+                                            putExtra(PlayerActivity.EXTRA_PATH, viewModel.filePath(task))
+                                            putExtra(PlayerActivity.EXTRA_TITLE, task.fileName)
+                                        }
+                                    )
+                                } else {
+                                    context.startActivity(viewModel.openIntent(task))
+                                }
+                            }
                         }) {
-                            Text(if (task.fileName.endsWith(".apk", ignoreCase = true)) "安装" else "打开")
+                            Text(if (isApk) "安装" else "打开")
                         }
                     }
                     when (task.state) {

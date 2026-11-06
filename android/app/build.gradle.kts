@@ -71,6 +71,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.media3:media3-exoplayer:1.5.0")
+    implementation("androidx.media3:media3-ui:1.5.0")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")

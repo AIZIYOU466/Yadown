@@ -35,5 +35,7 @@ class TaskListViewModel @Inject constructor(
 
     fun openIntent(task: TaskUi): Intent = repository.openIntent(task)
 
+    fun filePath(task: TaskUi): String = repository.filePath(task)
+
     fun deleteTask(task: TaskUi) = repository.deleteTask(task)
 }

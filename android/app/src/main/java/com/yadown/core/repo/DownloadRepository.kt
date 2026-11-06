@@ -178,6 +178,8 @@ class DownloadRepository @Inject constructor(
         }
     }
 
+    fun filePath(task: TaskUi): String = fileOf(task.id, task.sourceUrl).absolutePath
+
     private fun resolvedMime(task: TaskUi): String {
         val name = task.fileName.lowercase()
         return when {

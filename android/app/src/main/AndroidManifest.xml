@@ -32,6 +32,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <activity
+            android:name=".feature.player.PlayerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Yadown" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
