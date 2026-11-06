@@ -4,6 +4,7 @@ import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
 import com.yadown.core.db.entity.ChunkEntity
 import com.yadown.core.io.FileStore
+import com.yadown.core.net.RangePayload
 import com.yadown.core.net.RangeSource
 import com.yadown.core.survival.FsyncGate
 import java.util.ArrayDeque
@@ -168,7 +169,7 @@ class DownloadEngine(
             // 原始 chunk（index 在计划内）若位图已完成则跳过。
             if (index in 0 until plan.chunks.size && bitmap.isDone(index)) return@forEach
             pending.addLast(
-                ChunkRange(index, entity.startByte, entity.endInclusive) to entity.retryCount
+                ChunkRange(index, entity.startByte, entity.endByte) to entity.retryCount
             )
         }
         return pending
@@ -306,31 +307,33 @@ class DownloadEngine(
             startAtMs = startedAt
         )
         val stalled = AtomicBoolean(false)
-        val work = async(ioDispatcher) {
-            source.readRange(url, chunk.start, chunk.endInclusive) { _ ->
-                watchdog.onProgress(clock())
+        return coroutineScope {
+            val work = async(ioDispatcher) {
+                source.readRange(url, chunk.start, chunk.endInclusive) { _ ->
+                    watchdog.onProgress(clock())
+                }
             }
-        }
-        while (work.isActive) {
-            if (watchdog.isStalled(clock())) {
-                stalled.set(true)
-                work.cancel()
-                break
+            while (work.isActive) {
+                if (watchdog.isStalled(clock())) {
+                    stalled.set(true)
+                    work.cancel()
+                    break
+                }
+                delay(WATCHDOG_POLL_MS)
             }
-            delay(WATCHDOG_POLL_MS)
-        }
-        return try {
-            work.await()
-        } catch (e: CancellationException) {
-            if (stalled.get()) {
-                throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
+            try {
+                work.await()
+            } catch (e: CancellationException) {
+                if (stalled.get()) {
+                    throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
+                }
+                throw e
+            } catch (e: Exception) {
+                if (stalled.get()) {
+                    throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
+                }
+                throw e
             }
-            throw e
-        } catch (e: Exception) {
-            if (stalled.get()) {
-                throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
-            }
-            throw e
         }
     }
 
