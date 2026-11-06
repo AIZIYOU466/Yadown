@@ -64,7 +64,8 @@ class DownloadEngine(
         concurrency: Int = 4,
         chunkSize: Long = DownloadPlan.DEFAULT_CHUNK_SIZE,
         storageIops: Int = DEFAULT_STORAGE_IOPS,
-        onProgress: (DownloadProgress) -> Unit = {}
+        onProgress: (DownloadProgress) -> Unit = {},
+        onChunkDone: (ChunkRange) -> Unit = {}
     ) = withContext(ioDispatcher) {
         require(concurrency > 0) { "concurrency 必须为正: $concurrency" }
         val intent = intentDao.getById(intentId) ?: error("intent 不存在: $intentId")
@@ -108,7 +109,8 @@ class DownloadEngine(
                                 bitmapMutex = bitmapMutex,
                                 completed = completed,
                                 total = total,
-                                onProgress = onProgress
+                                onProgress = onProgress,
+                                onChunkDone = onChunkDone
                             )
                             health.recordSuccess()
                             Outcome.Done(chunk)
@@ -242,7 +244,8 @@ class DownloadEngine(
         bitmapMutex: Mutex,
         completed: AtomicLong,
         total: Long,
-        onProgress: (DownloadProgress) -> Unit
+        onProgress: (DownloadProgress) -> Unit,
+        onChunkDone: (ChunkRange) -> Unit
     ) {
         val id = chunkId(intentId, chunk.index)
         val startedAt = clock()
@@ -289,6 +292,7 @@ class DownloadEngine(
                 }
                 chunkDao.updateProgress(id, ChunkState.DONE.name, 0, startedAt, clock(), null, null)
                 onProgress(DownloadProgress(completed.addAndGet(chunk.length()), total))
+                onChunkDone(chunk)
             }
         }
     }

@@ -17,6 +17,7 @@ import com.yadown.core.transfer.ChunkState
 import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.DownloadPlan
 import com.yadown.core.transfer.IntentState
+import com.yadown.core.transfer.RangeCoverage
 import com.yadown.service.DownloadService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -60,6 +61,8 @@ class DownloadRepository @Inject constructor(
     private val progress = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val speeds = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val speedSamples = ConcurrentHashMap<String, Pair<Long, Long>>()
+    private val coverages = ConcurrentHashMap<String, RangeCoverage>()
+    private val completedIntents = ConcurrentHashMap.newKeySet<String>()
 
     fun observeTasks(): Flow<List<TaskUi>> =
         combine(intentDao.observeAll(), progress, speeds) { intents, downloaded, speedMap ->
@@ -129,20 +132,34 @@ class DownloadRepository @Inject constructor(
         ensureService()
         jobs[intentId] = scope.launch {
             try {
+                val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
+                chunkDao.getByIntent(intentId)
+                    .filter { it.state == ChunkState.DONE.name }
+                    .forEach { coverage.add(it.startByte..it.endByte) }
                 intentDao.updateState(intentId, IntentState.ACTIVE.name, System.currentTimeMillis())
-                engine.download(intentId, url, destPathOf(intentId, url)) { p ->
-                    val now = System.currentTimeMillis()
-                    val prev = speedSamples[intentId]
-                    if (prev != null) {
-                        val elapsed = now - prev.second
-                        if (elapsed > 0) {
-                            val speed = (p.downloadedBytes - prev.first).coerceAtLeast(0L) * 1000 / elapsed
-                            speeds.update { it + (intentId to speed) }
+                engine.download(
+                    intentId = intentId,
+                    url = url,
+                    destPath = destPathOf(intentId, url),
+                    onProgress = { p ->
+                        val now = System.currentTimeMillis()
+                        val prev = speedSamples[intentId]
+                        if (prev != null) {
+                            val elapsed = now - prev.second
+                            if (elapsed > 0) {
+                                val speed = (p.downloadedBytes - prev.first).coerceAtLeast(0L) * 1000 / elapsed
+                                speeds.update { it + (intentId to speed) }
+                            }
                         }
+                        speedSamples[intentId] = p.downloadedBytes to now
+                        progress.update { it + (intentId to p.downloadedBytes) }
+                    },
+                    onChunkDone = { chunk ->
+                        coverages.computeIfAbsent(intentId) { RangeCoverage() }
+                            .add(chunk.start..chunk.endInclusive)
                     }
-                    speedSamples[intentId] = p.downloadedBytes to now
-                    progress.update { it + (intentId to p.downloadedBytes) }
-                }
+                )
+                completedIntents.add(intentId)
                 runCatching { notifyCompleted(intentId, url) }
             } catch (e: CancellationException) {
                 intentDao.updateState(intentId, IntentState.PAUSED.name, System.currentTimeMillis())
@@ -179,6 +196,10 @@ class DownloadRepository @Inject constructor(
     }
 
     fun filePath(task: TaskUi): String = fileOf(task.id, task.sourceUrl).absolutePath
+
+    fun isRangeDownloaded(intentId: String, start: Long, endInclusive: Long): Boolean =
+        completedIntents.contains(intentId) ||
+            (coverages[intentId]?.covers(start, endInclusive) ?: false)
 
     private fun resolvedMime(task: TaskUi): String {
         val name = task.fileName.lowercase()

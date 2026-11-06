@@ -200,6 +200,7 @@ private fun TaskCard(
                                         Intent(context, PlayerActivity::class.java).apply {
                                             putExtra(PlayerActivity.EXTRA_PATH, viewModel.filePath(task))
                                             putExtra(PlayerActivity.EXTRA_TITLE, task.fileName)
+                                            putExtra(PlayerActivity.EXTRA_INTENT_ID, task.id)
                                         }
                                     )
                                 } else {
