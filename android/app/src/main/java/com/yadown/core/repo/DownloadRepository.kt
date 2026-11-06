@@ -1,0 +1,150 @@
+package com.yadown.core.repo
+
+import android.content.Context
+import com.yadown.core.db.dao.ChunkDao
+import com.yadown.core.db.dao.IntentDao
+import com.yadown.core.db.entity.ChunkEntity
+import com.yadown.core.db.entity.IntentEntity
+import com.yadown.core.net.RangeSource
+import com.yadown.core.transfer.ChunkState
+import com.yadown.core.transfer.DownloadEngine
+import com.yadown.core.transfer.DownloadPlan
+import com.yadown.core.transfer.IntentState
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class TaskUi(
+    val id: String,
+    val sourceUrl: String,
+    val fileName: String,
+    val state: String,
+    val downloadedBytes: Long,
+    val totalBytes: Long
+)
+
+@Singleton
+class DownloadRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val engine: DownloadEngine,
+    private val source: RangeSource,
+    private val intentDao: IntentDao,
+    private val chunkDao: ChunkDao
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val jobs = ConcurrentHashMap<String, Job>()
+    private val progress = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    fun observeTasks(): Flow<List<TaskUi>> =
+        combine(intentDao.observeAll(), progress) { intents, downloaded ->
+            intents.map { intent ->
+                TaskUi(
+                    id = intent.id,
+                    sourceUrl = intent.sourceUrl,
+                    fileName = fileNameOf(intent.sourceUrl),
+                    state = intent.state,
+                    downloadedBytes = downloaded[intent.id] ?: 0L,
+                    totalBytes = intent.totalSize ?: 0L
+                )
+            }
+        }
+
+    suspend fun createAndStart(url: String): String {
+        val probe = source.probe(url)
+        val total = probe.totalSize ?: error("无法确定文件大小，服务器未返回 Content-Length/Content-Range")
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+
+        intentDao.upsert(
+            IntentEntity(
+                id = id,
+                contentId = url,
+                sourceUrl = url,
+                totalSize = total,
+                mimeType = probe.mimeType,
+                etag = probe.etag,
+                lastModified = probe.lastModified,
+                rangeSupported = probe.rangeSupported,
+                valueMapJson = null,
+                availabilityContractJson = null,
+                state = IntentState.ACTIVE.name,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+
+        val plan = DownloadPlan.create(total)
+        chunkDao.upsertAll(
+            plan.chunks.map { chunk ->
+                ChunkEntity(
+                    id = chunkId(id, chunk.index),
+                    intentId = id,
+                    startByte = chunk.start,
+                    endByte = chunk.endInclusive,
+                    state = ChunkState.PENDING.name,
+                    retryCount = 0,
+                    checksum = null,
+                    connectionFingerprint = null,
+                    failureChainJson = null,
+                    startedAt = null,
+                    completedAt = null
+                )
+            }
+        )
+
+        start(id, url)
+        return id
+    }
+
+    fun start(intentId: String, url: String) {
+        if (jobs[intentId]?.isActive == true) return
+        jobs[intentId] = scope.launch {
+            try {
+                intentDao.updateState(intentId, IntentState.ACTIVE.name, System.currentTimeMillis())
+                engine.download(intentId, url, destPathOf(intentId, url)) { p ->
+                    progress.update { it + (intentId to p.downloadedBytes) }
+                }
+            } catch (e: CancellationException) {
+                intentDao.updateState(intentId, IntentState.PAUSED.name, System.currentTimeMillis())
+                throw e
+            } catch (_: Exception) {
+                intentDao.updateState(intentId, IntentState.FAILED.name, System.currentTimeMillis())
+            } finally {
+                jobs.remove(intentId)
+            }
+        }
+    }
+
+    fun pause(intentId: String) {
+        jobs[intentId]?.cancel()
+    }
+
+    fun resume(intentId: String, url: String) {
+        start(intentId, url)
+    }
+
+    private fun destPathOf(intentId: String, url: String): String {
+        val dir = File(context.filesDir, "downloads").apply { mkdirs() }
+        return File(dir, "${intentId}_${fileNameOf(url)}").absolutePath
+    }
+
+    private fun fileNameOf(url: String): String {
+        val path = runCatching { java.net.URI(url).path }.getOrNull().orEmpty()
+        return path.substringAfterLast('/').ifBlank { "download.bin" }
+    }
+
+    private fun chunkId(intentId: String, index: Int): String = "$intentId-$index"
+}

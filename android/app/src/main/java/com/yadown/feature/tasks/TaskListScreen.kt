@@ -1,6 +1,7 @@
 package com.yadown.feature.tasks
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,8 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -20,6 +23,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,41 +36,28 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.yadown.BuildConfig
+import com.yadown.core.repo.TaskUi
 import com.yadown.core.theme.Radius
 import com.yadown.core.theme.Spacing
 import com.yadown.core.theme.semanticColors
-import com.yadown.BuildConfig
+import com.yadown.core.transfer.IntentState
 import com.yadown.feature.p0.P0ProbeScreen
-
-/** 任务状态与 docs/ARCHITECTURE.md 的 Intent 状态机一一对应，UI 只是状态的投影。 */
-enum class TaskState { PENDING, ACTIVE, PAUSED, COMPLETED, FAILED }
-
-data class DownloadTaskUi(
-    val id: String,
-    val fileName: String,
-    val state: TaskState,
-    val downloadedBytes: Long,
-    val totalBytes: Long,
-    val speedBytesPerSec: Long,
-    val firstPlayable: Boolean = false
-)
-
-private val sampleTasks = listOf(
-    DownloadTaskUi("1", "github-releases/app-debug.apk", TaskState.ACTIVE, 18_400_000, 42_000_000, 3_200_000, false),
-    DownloadTaskUi("2", "lecture-01.mp4", TaskState.ACTIVE, 26_000_000, 380_000_000, 5_800_000, true),
-    DownloadTaskUi("3", "manual.pdf", TaskState.PAUSED, 4_100_000, 12_000_000, 0, false),
-    DownloadTaskUi("4", "archive.zip", TaskState.COMPLETED, 96_000_000, 96_000_000, 0, false)
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TaskListScreen() {
+fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
+    val tasks by viewModel.tasks.collectAsStateWithLifecycle()
     var showP0 by remember { mutableStateOf(false) }
+    var showAddDialog by remember { mutableStateOf(false) }
+
     if (showP0) {
         P0ProbeScreen(onBack = { showP0 = false })
         return
     }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -79,31 +70,55 @@ fun TaskListScreen() {
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { /* P4 接入新增任务 */ }) {
+            FloatingActionButton(onClick = { showAddDialog = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "新增下载")
             }
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = Spacing.lg),
-            verticalArrangement = Arrangement.spacedBy(Spacing.md)
-        ) {
-            items(sampleTasks, key = { it.id }) { task ->
-                TaskCard(task)
+        if (tasks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "还没有下载任务，点右下角 + 添加",
+                    color = MaterialTheme.semanticColors.subtleText
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = Spacing.lg),
+                verticalArrangement = Arrangement.spacedBy(Spacing.md)
+            ) {
+                items(tasks, key = { it.id }) { task ->
+                    TaskCard(task = task, viewModel = viewModel)
+                }
             }
         }
+    }
+
+    if (showAddDialog) {
+        AddTaskDialog(
+            onDismiss = { showAddDialog = false },
+            onConfirm = { url ->
+                viewModel.createTask(url)
+                showAddDialog = false
+            }
+        )
     }
 }
 
 @Composable
-private fun TaskCard(task: DownloadTaskUi) {
+private fun TaskCard(task: TaskUi, viewModel: TaskListViewModel) {
     val semantic = MaterialTheme.semanticColors
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(Radius.mdLarge),
+        shape = RoundedCornerShape(Radius.mdLarge),
         colors = CardDefaults.cardColors(containerColor = semantic.cardSurface)
     ) {
         Column(Modifier.padding(Spacing.lg)) {
@@ -118,6 +133,7 @@ private fun TaskCard(task: DownloadTaskUi) {
                 StateBadge(task.state)
             }
             Spacer(Modifier.height(Spacing.md))
+
             val fraction = if (task.totalBytes > 0) {
                 (task.downloadedBytes.toFloat() / task.totalBytes).coerceIn(0f, 1f)
             } else 0f
@@ -126,52 +142,76 @@ private fun TaskCard(task: DownloadTaskUi) {
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(Spacing.sm))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "${fmtBytes(task.downloadedBytes)} / ${fmtBytes(task.totalBytes)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = semantic.subtleText
                 )
-                Text(
-                    text = if (task.state == TaskState.ACTIVE) "${fmtBytes(task.speedBytesPerSec)}/s" else stateLabel(task.state),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = semantic.subtleText
-                )
-            }
-            if (task.firstPlayable) {
-                Spacer(Modifier.height(Spacing.sm))
-                Text(
-                    text = "现在可播放",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = semantic.success
-                )
+                when (task.state) {
+                    IntentState.ACTIVE.name -> TextButton(onClick = { viewModel.pause(task) }) {
+                        Text("暂停")
+                    }
+                    IntentState.PAUSED.name -> TextButton(onClick = { viewModel.resume(task) }) {
+                        Text("继续")
+                    }
+                    IntentState.FAILED.name -> TextButton(onClick = { viewModel.resume(task) }) {
+                        Text("重试")
+                    }
+                    else -> Text(
+                        text = if (task.state == IntentState.COMPLETED.name) "已完成" else "等待",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantic.subtleText
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun StateBadge(state: TaskState) {
+private fun StateBadge(state: String) {
     val semantic = MaterialTheme.semanticColors
     val (label, color) = when (state) {
-        TaskState.PENDING -> "等待" to semantic.subtleText
-        TaskState.ACTIVE -> "下载中" to semantic.info
-        TaskState.PAUSED -> "已暂停" to semantic.warning
-        TaskState.COMPLETED -> "已完成" to semantic.success
-        TaskState.FAILED -> "失败" to MaterialTheme.colorScheme.error
+        IntentState.ACTIVE.name -> "下载中" to semantic.info
+        IntentState.PAUSED.name -> "已暂停" to semantic.warning
+        IntentState.COMPLETED.name -> "已完成" to semantic.success
+        IntentState.FAILED.name -> "失败" to MaterialTheme.colorScheme.error
+        else -> "等待" to semantic.subtleText
     }
     Text(text = label, style = MaterialTheme.typography.labelMedium, color = color)
 }
 
-private fun stateLabel(state: TaskState): String = when (state) {
-    TaskState.PENDING -> "等待调度"
-    TaskState.ACTIVE -> "下载中"
-    TaskState.PAUSED -> "已暂停"
-    TaskState.COMPLETED -> "已完成"
-    TaskState.FAILED -> "失败"
+@Composable
+private fun AddTaskDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var url by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新增下载") },
+        text = {
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("下载链接") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(url.trim()) },
+                enabled = url.isNotBlank()
+            ) { Text("开始") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 private fun fmtBytes(bytes: Long): String {
