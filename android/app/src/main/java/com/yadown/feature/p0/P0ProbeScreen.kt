@@ -124,7 +124,7 @@ fun P0ProbeScreen(onBack: () -> Unit) {
             Button(onClick = {
                 val cap = IncrementalInstallProbe.probe(context)
                 log = "T0.3 sdk=${cap.sdkInt}, installer=${cap.installerAvailable}, " +
-                    "staged=${cap.stagedSupported}, 降级=${cap.degradedPath}"
+                    "stagedReadable=${cap.stagedReadable}, 降级=${cap.degradedPath}"
             }) { Text("探测") }
 
             Text("日志", style = MaterialTheme.typography.titleMedium)

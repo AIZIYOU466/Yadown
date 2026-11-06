@@ -62,6 +62,8 @@
 
 **假设**：Android 12 以下存在可接受的增量安装降级路径。
 
+**已核实事实（2026-11-06）**：`PackageInstaller.SessionParams.setStaged()` 是 `@SystemApi @TestApi @hide`，普通应用**无法调用**；公开 API 只有 `PackageInstaller.Session.isStaged()`（API 29+）。因此对普通应用而言 staged/incremental install 不可直接使用，降级路径为「先下载完成后安装」。T0.3 的验证重点转为：测量「先下载完成后安装」的 Time-to-First-Launchable 是否可接受。
+
 **代码**：`T0.3_IncrementalInstall/IncrementalInstallProbe.kt`
 
 **步骤**：

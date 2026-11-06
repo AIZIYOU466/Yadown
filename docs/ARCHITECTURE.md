@@ -245,6 +245,21 @@ data class FailureChain(
 | STORAGE_FULL | 暂停，通知用户 |
 | ROM_KILLED_SERVICE | 重新引导权限设置 |
 
+### 扩展（定稿表未显式列出的归因）
+
+以下归因在定稿表外，按语义补全，代码见 `FailureRecovery.kt`，并有单测覆盖：
+
+| 归因链首因 | 恢复动作 |
+|---|---|
+| TLS_HANDSHAKE_FAILED | RETRY_BACKOFF |
+| SERVER_RANGE_UNSUPPORTED | REDUCE_CONCURRENCY_SWITCH_SOURCE |
+| CHECKSUM_MISMATCH | RETRY_BACKOFF |
+| RATE_LIMITED | RETRY_BACKOFF |
+| BUDGET_EXCEEDED | PAUSE_NOTIFY_USER |
+| PEER_UNAVAILABLE | REDUCE_CONCURRENCY_SWITCH_SOURCE |
+| UNKNOWN | RETRY_BACKOFF |
+| 空归因链 | NONE |
+
 ---
 
 ## 5. 每层接口契约

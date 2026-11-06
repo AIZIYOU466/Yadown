@@ -58,7 +58,7 @@ object MdnsProbe {
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) = onFailed(errorCode)
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = onFailed(errorCode)
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                nsd.resolveService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, object : NsdManager.ResolveListener {
+                nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                     override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) = onFailed(errorCode)
                     override fun onServiceResolved(info: NsdServiceInfo) {
                         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
