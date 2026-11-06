@@ -115,7 +115,8 @@
 | 传输协议（先校验后读/顺序回退/416/429/弱 ETag） | 已完成 | 200 部分区间不读 body；206 读取上限 expected+1；416/429/非 identity 编码显式归因；非 Range 源走单流顺序下载；裂解预算按 retryCount 收敛 |
 | 平台 Carrier（FGS onTimeout/UIDT/Worker 上限） | 已完成（编译级，真机待验证） | dataSync 6 小时超时调用 onTimeout 并停止；Android 14+ UIDT JobService + RUN_USER_INITIATED_JOBS；暂停取消 Worker/UIDT；Worker 最多 5 次尝试 |
 | 系统治理与运行遥测 | 已完成（进程内 + 文件） | 全局 8 连接 / 每源 4 连接闸门；进度 200ms 节流；RangeCoverage 有序合并+二分；TransferTelemetry 聚合并写入 `filesDir/telemetry/events.ndjson` |
-| Instrumentation 骨架 | 已加（CI 编译门槛） | androidTest：Room DAO 往返、MediaStore 发布、DownloadingDataSource 读取；CI 增加 `assembleDebugAndroidTest`；真机执行与 CI 首跑待确认 |
+| Instrumentation 骨架 | 已完成（CI 编译通过） | androidTest：Room DAO 往返、MediaStore 发布、DownloadingDataSource 读取、Room 迁移；CI run 42233170253 通过 `assembleDebugAndroidTest`；真机执行待 P5 |
+| Room v2 + telemetry 表 | 已完成 | `transfer_events` 表 + `MIGRATION_1_2` + `TransferEventDao`；任务级 COMPLETED/FAILED/PAUSED 事件写入；迁移 SQL 有 androidTest 覆盖 |
 | UI 接入 | 已完成 | 真实任务流、新建任务、暂停/继续/重试、打开/删除 |
 | P2 系统生存层 | 已完成（真机项待验证） | T2.1 PlatformAdapter 五项探测（ROM/UIDT/存储能力/网络可达性/存储加密）；T2.2 Carrier 选择已接入下载路径（前台 FGS / 后台 UIDT 或 WorkManager、Doze 停传）；T2.3 ROM 感知后台引导（小米/华为/OPPO/vivo 直达设置页 + 电池白名单）；T2.4 完成后公共媒体库发布（仅 Android 10+）；T2.5 FsyncGate；FGS `onTimeout` 与 UIDT JobService 已实现；存活率需真机测 |
 | P3 内容语义层 | 已完成（真机项待验证） | **T3.1 MP4 moov 优先（可边下边播）/ T3.2 APK Manifest 优先 / T3.3 PDF xref+Root 优先 / T3.4 AvailabilityContract 驱动 UI 解锁 / T3.5 未知格式顺序传输**；语义优先调度只改排队不动分块边界；APK 受 T0.3 约束仍为「下完再装」；PDF 查看器未接入，暂不承诺部分预览 |
