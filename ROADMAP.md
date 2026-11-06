@@ -91,13 +91,17 @@
 | 阶段 | 状态 | 备注 |
 |---|---|---|
 | 工程初始化（AGENTS/ARCHITECTURE/ROADMAP） | 已完成 | 2026-11-06 |
-| Gradle 骨架（Kotlin+Compose+Hilt+Room） | 已完成 | UI 对齐 AiCode；`checkDebugAarMetadata` 与依赖图解析均通过（compileSdk 36） |
+| Gradle 骨架（Kotlin+Compose+Hilt+Room） | 已完成 | UI 对齐 AiCode |
 | 容器内 APK 构建 | 不可行 | aapt2 2.19 不支持 android-36 资源表，须 CI/真机构建（见 AGENTS.md R8） |
-| CI 构建（GitHub Actions） | 已验证成功 | run 42171049628，产物 Yadown-debug-apk（约 19.8 MB）；流程含资源编译/Kotlin 编译/KSP/打包 |
-| P0/T0.1 多链路聚合 | 待开始 | 探针代码已就绪，待真机回填 |
-| P0/T0.2 mDNS | 待开始 | 探针代码已就绪，待真机回填 |
-| P0/T0.3 增量安装降级 | 待开始 | 探针代码已就绪，待真机回填 |
-| P1 | 未开始 | 被 P0 阻塞 |
-| P2-P5 | 未开始 | — |
+| CI 构建（GitHub Actions） | 持续验证 | ubuntu-latest 构建 + 单测 + debug APK artifact |
+| P0/T0.1 多链路聚合 | 待真机 | 探针代码已就绪，待回填 |
+| P0/T0.2 mDNS | 待真机 | 探针代码已就绪，待回填 |
+| P0/T0.3 增量安装降级 | 待真机 | 已核实普通应用无法 `setStaged`，降级为「先下完再装」 |
+| P1 传输收敛层（L3） | 核心完成 | 状态机/Room/位图/四重 Range 校验/动态裂解/并发闸门/失败归因 + OkHttp 运行时引擎，单测通过；**L3 不依赖 P0（P0 只影响 L1/L2）** |
+| UI 接入 | 已完成 | 真实任务流、新建任务、暂停/继续/重试、打开/删除 |
+| P2 系统生存层 | 部分完成 | 前台服务 + 进度通知已实现；UIDT/WorkManager/Doze/ROM 适配待做 |
+| P3 内容语义层 | 未开始 | — |
+| P4 多源协同层 | 未开始 | — |
+| P5 集成真机验证 | 未开始 | — |
 
 *ROADMAP 版本：v1.0 — 2026-11-06*

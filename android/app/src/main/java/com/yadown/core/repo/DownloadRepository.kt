@@ -1,8 +1,11 @@
 package com.yadown.core.repo
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
@@ -39,7 +42,8 @@ data class TaskUi(
     val mimeType: String?,
     val state: String,
     val downloadedBytes: Long,
-    val totalBytes: Long
+    val totalBytes: Long,
+    val speedBytesPerSec: Long
 )
 
 @Singleton
@@ -54,9 +58,11 @@ class DownloadRepository @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
     private val progress = MutableStateFlow<Map<String, Long>>(emptyMap())
+    private val speeds = MutableStateFlow<Map<String, Long>>(emptyMap())
+    private val speedSamples = ConcurrentHashMap<String, Pair<Long, Long>>()
 
     fun observeTasks(): Flow<List<TaskUi>> =
-        combine(intentDao.observeAll(), progress) { intents, downloaded ->
+        combine(intentDao.observeAll(), progress, speeds) { intents, downloaded, speedMap ->
             intents.map { intent ->
                 TaskUi(
                     id = intent.id,
@@ -65,7 +71,8 @@ class DownloadRepository @Inject constructor(
                     mimeType = intent.mimeType,
                     state = intent.state,
                     downloadedBytes = downloaded[intent.id] ?: 0L,
-                    totalBytes = intent.totalSize ?: 0L
+                    totalBytes = intent.totalSize ?: 0L,
+                    speedBytesPerSec = speedMap[intent.id] ?: 0L
                 )
             }
         }
@@ -124,8 +131,19 @@ class DownloadRepository @Inject constructor(
             try {
                 intentDao.updateState(intentId, IntentState.ACTIVE.name, System.currentTimeMillis())
                 engine.download(intentId, url, destPathOf(intentId, url)) { p ->
+                    val now = System.currentTimeMillis()
+                    val prev = speedSamples[intentId]
+                    if (prev != null) {
+                        val elapsed = now - prev.second
+                        if (elapsed > 0) {
+                            val speed = (p.downloadedBytes - prev.first).coerceAtLeast(0L) * 1000 / elapsed
+                            speeds.update { it + (intentId to speed) }
+                        }
+                    }
+                    speedSamples[intentId] = p.downloadedBytes to now
                     progress.update { it + (intentId to p.downloadedBytes) }
                 }
+                runCatching { notifyCompleted(intentId, url) }
             } catch (e: CancellationException) {
                 intentDao.updateState(intentId, IntentState.PAUSED.name, System.currentTimeMillis())
                 throw e
@@ -133,6 +151,8 @@ class DownloadRepository @Inject constructor(
                 intentDao.updateState(intentId, IntentState.FAILED.name, System.currentTimeMillis())
             } finally {
                 jobs.remove(intentId)
+                speedSamples.remove(intentId)
+                speeds.update { it - intentId }
                 if (jobs.isEmpty()) stopService()
             }
         }
@@ -167,6 +187,34 @@ class DownloadRepository @Inject constructor(
             intentDao.delete(task.id)
             progress.update { it - task.id }
         }
+    }
+
+    private fun notifyCompleted(intentId: String, url: String) {
+        val file = fileOf(intentId, url)
+        if (!file.exists()) return
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val open = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val pending = PendingIntent.getActivity(
+            context,
+            intentId.hashCode(),
+            open,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(context, DownloadService.CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("下载完成")
+            .setContentText(fileNameOf(url))
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .build()
+        NotificationManagerCompat.from(context).notify(intentId.hashCode(), notification)
     }
 
     private fun fileOf(intentId: String, url: String): File =

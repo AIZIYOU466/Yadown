@@ -177,7 +177,12 @@ private fun TaskCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${fmtBytes(task.downloadedBytes)} / ${fmtBytes(task.totalBytes)}",
+                    text = buildString {
+                        append("${fmtBytes(task.downloadedBytes)} / ${fmtBytes(task.totalBytes)}")
+                        if (task.state == IntentState.ACTIVE.name && task.speedBytesPerSec > 0) {
+                            append(" · ${fmtBytes(task.speedBytesPerSec)}/s")
+                        }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = semantic.subtleText,
                     modifier = Modifier.weight(1f)
