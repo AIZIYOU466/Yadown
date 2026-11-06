@@ -14,7 +14,7 @@ class RangeCoverageTest {
     @Test
     fun singleRange_coversInside() {
         val coverage = RangeCoverage()
-        coverage.add(0..99)
+        coverage.add(0L..99L)
         assertTrue(coverage.covers(10, 20))
         assertTrue(coverage.covers(0, 99))
     }
@@ -22,7 +22,7 @@ class RangeCoverageTest {
     @Test
     fun singleRange_doesNotCoverOutside() {
         val coverage = RangeCoverage()
-        coverage.add(0..99)
+        coverage.add(0L..99L)
         assertFalse(coverage.covers(0, 100))
         assertFalse(coverage.covers(100, 200))
     }
@@ -30,8 +30,8 @@ class RangeCoverageTest {
     @Test
     fun adjacentRanges_joinCoverage() {
         val coverage = RangeCoverage()
-        coverage.add(0..49)
-        coverage.add(50..99)
+        coverage.add(0L..49L)
+        coverage.add(50L..99L)
         assertTrue(coverage.covers(0, 99))
         assertTrue(coverage.covers(40, 60))
     }
@@ -39,8 +39,8 @@ class RangeCoverageTest {
     @Test
     fun gap_breaksCoverage() {
         val coverage = RangeCoverage()
-        coverage.add(0..49)
-        coverage.add(60..99)
+        coverage.add(0L..49L)
+        coverage.add(60L..99L)
         assertFalse(coverage.covers(0, 99))
         assertFalse(coverage.covers(45, 65))
         assertTrue(coverage.covers(60, 99))
@@ -54,8 +54,8 @@ class RangeCoverageTest {
     @Test
     fun unsortedRanges_stillCover() {
         val coverage = RangeCoverage()
-        coverage.add(50..99)
-        coverage.add(0..49)
+        coverage.add(50L..99L)
+        coverage.add(0L..49L)
         assertTrue(coverage.covers(25, 75))
     }
 }

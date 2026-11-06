@@ -5,6 +5,7 @@ import com.yadown.core.io.FileStore
 import com.yadown.core.io.RandomAccessFileStore
 import com.yadown.core.net.OkHttpRangeSource
 import com.yadown.core.net.RangeSource
+import com.yadown.core.semantic.FormatResolverRegistry
 import com.yadown.core.transfer.BitmapStore
 import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.FileBitmapStore
@@ -39,6 +40,10 @@ object TransferModule {
     @Singleton
     fun provideBitmapStore(@ApplicationContext context: Context): BitmapStore =
         FileBitmapStore(File(context.filesDir, "bitmaps"))
+
+    @Provides
+    @Singleton
+    fun provideFormatResolverRegistry(): FormatResolverRegistry = FormatResolverRegistry()
 
     @Provides
     @Singleton

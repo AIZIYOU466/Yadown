@@ -6,6 +6,8 @@ import com.yadown.core.db.entity.ChunkEntity
 import com.yadown.core.io.FileStore
 import com.yadown.core.net.RangePayload
 import com.yadown.core.net.RangeSource
+import com.yadown.core.semantic.AvailabilityContract
+import com.yadown.core.semantic.ValueMap
 import com.yadown.core.survival.FsyncGate
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
@@ -64,7 +66,10 @@ class DownloadEngine(
         concurrency: Int = 4,
         chunkSize: Long = DownloadPlan.DEFAULT_CHUNK_SIZE,
         storageIops: Int = DEFAULT_STORAGE_IOPS,
+        valueMap: ValueMap? = null,
+        availability: AvailabilityContract? = null,
         onProgress: (DownloadProgress) -> Unit = {},
+        onAvailable: () -> Unit = {},
         onChunkDone: (ChunkRange) -> Unit = {}
     ) = withContext(ioDispatcher) {
         require(concurrency > 0) { "concurrency 必须为正: $concurrency" }
@@ -75,11 +80,19 @@ class DownloadEngine(
         val session = RangeSession(intent.etag, intent.lastModified, total)
 
         val dbChunks = chunkDao.getByIntent(intentId)
-        val pending = buildPending(plan, bitmap, dbChunks)
+        val pending = buildPending(plan, bitmap, dbChunks, valueMap)
         val completed = AtomicLong(dbChunks.filter { it.state == ChunkState.DONE.name }
             .sumOf { it.endByte - it.startByte + 1 })
 
         onProgress(DownloadProgress(completed.get(), total))
+
+        // 关键区域可能在上一次会话中已落盘，先判定，避免漏报或重复提示。
+        val readyRanges = availability?.let { collectReadyRanges(plan, bitmap, dbChunks) }
+        val availableUnlocked = AtomicBoolean(
+            readyRanges != null && availability != null &&
+                availability.isAvailable { s, e -> readyRanges.covers(s, e) }
+        )
+        if (availableUnlocked.get()) onAvailable()
 
         val bitmapMutex = Mutex()
         val health = HealthTracker()
@@ -113,6 +126,14 @@ class DownloadEngine(
                                 onChunkDone = onChunkDone
                             )
                             health.recordSuccess()
+                            if (availability != null && readyRanges != null && !availableUnlocked.get()) {
+                                readyRanges.add(chunk.start..chunk.endInclusive)
+                                if (availability.isAvailable { s, e -> readyRanges.covers(s, e) } &&
+                                    availableUnlocked.compareAndSet(false, true)
+                                ) {
+                                    onAvailable()
+                                }
+                            }
                             Outcome.Done(chunk)
                         } catch (e: CancellationException) {
                             throw e
@@ -160,21 +181,49 @@ class DownloadEngine(
     private fun buildPending(
         plan: DownloadPlan,
         bitmap: ChunkBitmap,
-        dbChunks: List<ChunkEntity>
+        dbChunks: List<ChunkEntity>,
+        valueMap: ValueMap? = null
     ): ArrayDeque<Pair<ChunkRange, Int>> {
+        val byIndex = dbChunks.associateBy { parseChunkIndex(it.id) }
         val pending = ArrayDeque<Pair<ChunkRange, Int>>()
-        dbChunks.forEach { entity ->
-            if (entity.state == ChunkState.DONE.name || entity.state == ChunkState.INVALIDATED.name) {
-                return@forEach
-            }
-            val index = parseChunkIndex(entity.id)
-            // 原始 chunk（index 在计划内）若位图已完成则跳过。
-            if (index in 0 until plan.chunks.size && bitmap.isDone(index)) return@forEach
-            pending.addLast(
-                ChunkRange(index, entity.startByte, entity.endByte) to entity.retryCount
-            )
+
+        // 位图按 index 索引，因此只在计划内 chunk 上做语义重排；
+        // 顺序传输（valueMap == null）时 priorityOrder 返回原序，行为不变。
+        for (index in plan.priorityOrder(valueMap)) {
+            val entity = byIndex[index] ?: continue
+            if (entity.state == ChunkState.DONE.name || entity.state == ChunkState.INVALIDATED.name) continue
+            if (bitmap.isDone(index)) continue
+            pending.addLast(ChunkRange(index, entity.startByte, entity.endByte) to entity.retryCount)
         }
+
+        // 裂解产生的子 chunk index 超出原始计划，位图不记录，按完成状态过滤后追加。
+        dbChunks
+            .filter { parseChunkIndex(it.id) >= plan.chunks.size }
+            .filter { it.state != ChunkState.DONE.name && it.state != ChunkState.INVALIDATED.name }
+            .sortedBy { it.startByte }
+            .forEach {
+                pending.addLast(
+                    ChunkRange(parseChunkIndex(it.id), it.startByte, it.endByte) to it.retryCount
+                )
+            }
+
         return pending
+    }
+
+    /** 汇总已完成字节区间（位图 + DB），用于判定可用性是否已达成。 */
+    private fun collectReadyRanges(
+        plan: DownloadPlan,
+        bitmap: ChunkBitmap,
+        dbChunks: List<ChunkEntity>
+    ): RangeCoverage {
+        val ranges = RangeCoverage()
+        plan.chunks.forEach { chunk ->
+            if (bitmap.isDone(chunk.index)) ranges.add(chunk.start..chunk.endInclusive)
+        }
+        dbChunks.filter { it.state == ChunkState.DONE.name }.forEach { entity ->
+            ranges.add(entity.startByte..entity.endByte)
+        }
+        return ranges
     }
 
     /** 返回 true 表示已把 chunk 重新排入 pending（裂解或原地重试）；false 表示重试预算耗尽。 */

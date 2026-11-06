@@ -42,6 +42,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yadown.BuildConfig
 import com.yadown.core.repo.TaskUi
+import com.yadown.core.semantic.AvailabilityContract
+import com.yadown.core.survival.BatteryGuidance
+import com.yadown.core.survival.PlatformProbe
 import com.yadown.core.theme.Radius
 import com.yadown.core.theme.Spacing
 import com.yadown.core.theme.semanticColors
@@ -53,7 +56,9 @@ import com.yadown.feature.player.PlayerActivity
 @Composable
 fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
     var showP0 by remember { mutableStateOf(false) }
+    var showBackgroundGuide by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<TaskUi?>(null) }
 
@@ -67,6 +72,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
             TopAppBar(
                 title = { Text("Yadown", fontWeight = FontWeight.SemiBold) },
                 actions = {
+                    TextButton(onClick = { showBackgroundGuide = true }) { Text("后台") }
                     if (BuildConfig.DEBUG) {
                         TextButton(onClick = { showP0 = true }) { Text("P0") }
                     }
@@ -110,12 +116,27 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
         }
     }
 
+    if (showBackgroundGuide) {
+        BackgroundGuideDialog(onDismiss = { showBackgroundGuide = false })
+    }
+
     if (showAddDialog) {
         AddTaskDialog(
             onDismiss = { showAddDialog = false },
             onConfirm = { url ->
                 viewModel.createTask(url)
                 showAddDialog = false
+            }
+        )
+    }
+
+    error?.let { message ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearError,
+            title = { Text("无法创建任务") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = viewModel::clearError) { Text("知道了") }
             }
         )
     }
@@ -162,6 +183,14 @@ private fun TaskCard(
                 Spacer(Modifier.width(Spacing.sm))
                 StateBadge(task.state)
             }
+            if (task.availableNow && task.state != IntentState.COMPLETED.name) {
+                Spacer(Modifier.height(Spacing.xs))
+                Text(
+                    text = availableLabel(task),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = semantic.success
+                )
+            }
             Spacer(Modifier.height(Spacing.md))
 
             val fraction = if (task.totalBytes > 0) {
@@ -190,6 +219,7 @@ private fun TaskCard(
                     modifier = Modifier.weight(1f)
                 )
                 Row {
+                    val capability = task.capability
                     if (task.state == IntentState.COMPLETED.name) {
                         val isApk = task.fileName.endsWith(".apk", ignoreCase = true)
                         val isVideo = task.fileName.endsWith(".mp4", ignoreCase = true)
@@ -209,6 +239,30 @@ private fun TaskCard(
                             }
                         }) {
                             Text(if (isApk) "安装" else "打开")
+                        }
+                    } else if (task.availableNow) {
+                        // 关键区域已就绪：不必等全文下完就能进入播放/预览/安装。
+                        // 只有视频具备真正的边下边播；其余格式等整包完成后再提供入口。
+                        val action = when (capability) {
+                            AvailabilityContract.Capability.PLAYABLE.name -> "播放"
+                            else -> null
+                        }
+                        if (action != null) {
+                            TextButton(onClick = {
+                                runCatching {
+                                    if (capability == AvailabilityContract.Capability.PLAYABLE.name) {
+                                        context.startActivity(
+                                            Intent(context, PlayerActivity::class.java).apply {
+                                                putExtra(PlayerActivity.EXTRA_PATH, viewModel.filePath(task))
+                                                putExtra(PlayerActivity.EXTRA_TITLE, task.fileName)
+                                                putExtra(PlayerActivity.EXTRA_INTENT_ID, task.id)
+                                            }
+                                        )
+                                    } else {
+                                        context.startActivity(viewModel.openIntent(task))
+                                    }
+                                }
+                            }) { Text(action) }
                         }
                     }
                     when (task.state) {
@@ -265,6 +319,47 @@ private fun AddTaskDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+private fun availableLabel(task: TaskUi): String = when (task.capability) {
+    AvailabilityContract.Capability.PLAYABLE.name -> "关键区域已就绪·现在可播放"
+    else -> "关键区域已就绪"
+}
+
+@Composable
+private fun BackgroundGuideDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val guidance = remember { BatteryGuidance.guidance(PlatformProbe.detectRom()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(guidance.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                guidance.steps.forEach { step ->
+                    Text(step, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    "否则系统可能在应用退到后台后杀掉下载进程。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                runCatching { context.startActivity(BatteryGuidance.settingsIntent(context, guidance)) }
+                onDismiss()
+            }) { Text("去设置") }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                runCatching {
+                    context.startActivity(BatteryGuidance.batteryOptimizationIntent(context))
+                }
+                onDismiss()
+            }) { Text("电池白名单") }
         }
     )
 }

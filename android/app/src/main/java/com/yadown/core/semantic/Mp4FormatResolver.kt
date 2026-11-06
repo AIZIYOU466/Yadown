@@ -27,10 +27,14 @@ class Mp4FormatResolver(
         val total = probe.totalSize ?: return null
         if (total < MIN_FILE_SIZE) return null
 
-        return runCatching { resolveOrThrow(total, reader) }.getOrNull()
+        return runCatching { resolveOrThrow(total, probe.mimeType, reader) }.getOrNull()
     }
 
-    private suspend fun resolveOrThrow(total: Long, reader: RangeReader): ContentDescriptor? {
+    private suspend fun resolveOrThrow(
+        total: Long,
+        mimeType: String?,
+        reader: RangeReader
+    ): ContentDescriptor? {
         val headLength = minOf(headProbeSize, total)
         if (!isMp4Header(reader.read(0, headLength - 1))) return null
 
@@ -50,7 +54,7 @@ class Mp4FormatResolver(
         return ContentDescriptor(
             contentId = "mp4:$total",
             totalSize = total,
-            mimeType = probe.mimeType ?: "video/mp4",
+            mimeType = mimeType ?: "video/mp4",
             valueMap = ValueMap.fromSegments(total, readySegments),
             availabilityContract = AvailabilityContract(
                 capability = AvailabilityContract.Capability.PLAYABLE,
@@ -78,9 +82,14 @@ class Mp4FormatResolver(
 
     /** 在头部 Box 链中查找 moov，找不到则回退到尾部扫描。 */
     private suspend fun locateMoov(total: Long, reader: RangeReader): BoxHeader? {
-        scanBoxChain(0, minOf(headProbeSize, total), reader)?.let { return it }
+        val headLength = minOf(headProbeSize, total)
+        scanBoxChain(0, headLength, reader)?.let { return it }
+        // 文件已被头部窗口全量覆盖，不必重复读尾部。
+        if (headLength >= total) return null
 
-        val tailStart = (total - tailProbeSize).coerceAtLeast(0)
+        // 尾部窗口自适应：小文件少读，大文件封顶，避免探测本身就吃掉可观流量。
+        val tailWindow = minOf(tailProbeSize, maxOf(MIN_TAIL_PROBE, total / 8))
+        val tailStart = (total - tailWindow).coerceAtLeast(0)
         return scanBoxChain(tailStart, total, reader, allowPartial = true)
     }
 
@@ -198,6 +207,7 @@ class Mp4FormatResolver(
 
         private const val DEFAULT_HEAD_PROBE = 256L * 1024
         private const val DEFAULT_TAIL_PROBE = 2L * 1024 * 1024
+        private const val MIN_TAIL_PROBE = 64L * 1024
         private const val MIN_FILE_SIZE = 1_024L
 
         private const val WEIGHT_HEADER = 30.0

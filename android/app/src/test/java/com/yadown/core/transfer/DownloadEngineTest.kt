@@ -8,6 +8,9 @@ import com.yadown.core.io.RandomAccessFileStore
 import com.yadown.core.net.ProbeResult
 import com.yadown.core.net.RangePayload
 import com.yadown.core.net.RangeSource
+import com.yadown.core.semantic.AvailabilityContract
+import com.yadown.core.semantic.Segment
+import com.yadown.core.semantic.ValueMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -104,6 +107,8 @@ class DownloadEngineTest {
         override suspend fun upsert(intent: IntentEntity) { map[intent.id] = intent }
         override suspend fun getById(id: String): IntentEntity? = map[id]
         override fun observeAll(): Flow<List<IntentEntity>> = flowOf(map.values.toList())
+        override suspend fun getByState(state: String): List<IntentEntity> =
+            map.values.filter { it.state == state }
         override suspend fun updateState(id: String, state: String, updatedAt: Long) {
             map[id] = map[id]?.copy(state = state, updatedAt = updatedAt) ?: return
         }
@@ -319,5 +324,84 @@ class DownloadEngineTest {
             "裂解后的子分块应完成",
             chunkDao.countByState("i1", ChunkState.DONE.name) >= 3
         )
+    }
+
+    /** 记录 Range 请求顺序，用于验证语义优先调度。 */
+    private class RecordingSource(private val total: Long, private val etag: String?) : RangeSource {
+        val requests = mutableListOf<LongRange>()
+
+        override suspend fun probe(url: String) = ProbeResult(total, true, etag, null, null)
+
+        override suspend fun readRange(
+            url: String,
+            start: Long,
+            endInclusive: Long,
+            onProgress: (Long) -> Unit
+        ): RangePayload {
+            synchronized(requests) { requests += start..endInclusive }
+            val len = (endInclusive - start + 1).toInt()
+            return RangePayload(
+                bytes = ByteArray(len) { i -> ((start + i) % 251).toByte() },
+                statusCode = 206,
+                contentRange = "bytes $start-$endInclusive/$total",
+                etag = etag,
+                lastModified = null
+            )
+        }
+    }
+
+    @Test
+    fun highValueChunkIsRequestedFirst() = runTest {
+        val total = 10L
+        val source = RecordingSource(total, etag = "\"v1\"")
+        val intentDao = FakeIntentDao()
+        val chunkDao = FakeChunkDao()
+        intentDao.upsert(intent(total, "\"v1\""))
+        seedChunks(chunkDao, total, 4)
+        val file = tmp.newFile()
+
+        // 末尾区间（8..9）权重最高，应最先下发。
+        val valueMap = ValueMap.fromSegments(
+            total,
+            listOf(Segment(0, 8, 1.0), Segment(8, 10, 99.0))
+        )
+        engine(source, InMemoryBitmapStore(), intentDao, chunkDao).download(
+            intentId = "i1",
+            url = "https://example.com/file",
+            destPath = file.absolutePath,
+            concurrency = 1,
+            chunkSize = 4,
+            valueMap = valueMap
+        )
+
+        assertEquals(8L..9L, source.requests.first())
+    }
+
+    @Test
+    fun availabilityFiresOnceWhenRequiredRangeDone() = runTest {
+        val total = 10L
+        val source = RecordingSource(total, etag = "\"v1\"")
+        val intentDao = FakeIntentDao()
+        val chunkDao = FakeChunkDao()
+        intentDao.upsert(intent(total, "\"v1\""))
+        seedChunks(chunkDao, total, 4)
+        val file = tmp.newFile()
+        var availableCount = 0
+
+        val contract = AvailabilityContract(
+            capability = AvailabilityContract.Capability.PLAYABLE,
+            readySegments = listOf(Segment(4, 8, 100.0))
+        )
+        engine(source, InMemoryBitmapStore(), intentDao, chunkDao).download(
+            intentId = "i1",
+            url = "https://example.com/file",
+            destPath = file.absolutePath,
+            concurrency = 1,
+            chunkSize = 4,
+            availability = contract,
+            onAvailable = { availableCount++ }
+        )
+
+        assertEquals("解锁回调只应触发一次", 1, availableCount)
     }
 }

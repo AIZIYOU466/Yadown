@@ -93,9 +93,9 @@ data class AvailabilityContract(
 ) {
     enum class Capability { PLAYABLE, INSTALLABLE, PREVIEWABLE, SEQUENTIAL }
 
-    /** 所有关键区域都已下载完成才解锁能力。 */
+    /** 所有关键区域都已下载完成才解锁能力；空契约表示「不存在部分可用」，永不解锁。 */
     fun isAvailable(downloaded: (Long, Long) -> Boolean): Boolean =
-        readySegments.all { downloaded(it.start, it.endExclusive - 1) }
+        readySegments.isNotEmpty() && readySegments.all { downloaded(it.start, it.endExclusive - 1) }
 }
 
 /** 落盘方式描述，供 StreamPipe 选择写入策略。 */

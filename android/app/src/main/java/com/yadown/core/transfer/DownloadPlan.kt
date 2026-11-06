@@ -1,5 +1,7 @@
 package com.yadown.core.transfer
 
+import com.yadown.core.semantic.ValueMap
+
 data class DownloadPlan(
     val totalSize: Long,
     val chunkSize: Long,
@@ -22,6 +24,21 @@ data class DownloadPlan(
             }
             return DownloadPlan(totalSize, chunkSize, chunks)
         }
+    }
+
+    /**
+     * 语义优先下发顺序：权重高的分块排前面。
+     *
+     * 只改变排队次序，不改分块边界与 index —— 位图按 index 索引，
+     * 一旦重排边界就会让已落盘的位图与文件内容错位。
+     * 权重相同时保持原有 index 升序，保证顺序传输场景（valueMap 为空）行为与之前完全一致。
+     */
+    fun priorityOrder(valueMap: ValueMap?): List<Int> {
+        if (valueMap == null) return chunks.indices.toList()
+        return chunks.indices.sortedWith(
+            compareByDescending<Int> { valueMap.weightAt(chunks[it].start) }
+                .thenBy { it }
+        )
     }
 }
 

@@ -18,6 +18,9 @@ interface IntentDao {
     @Query("SELECT * FROM intents ORDER BY created_at DESC")
     fun observeAll(): Flow<List<IntentEntity>>
 
+    @Query("SELECT * FROM intents WHERE state = :state")
+    suspend fun getByState(state: String): List<IntentEntity>
+
     @Query("UPDATE intents SET state = :state, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateState(id: String, state: String, updatedAt: Long)
 
