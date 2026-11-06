@@ -4,6 +4,7 @@ import com.yadown.core.db.dao.ChunkDao
 import com.yadown.core.db.dao.IntentDao
 import com.yadown.core.io.FileStore
 import com.yadown.core.net.RangeSource
+import com.yadown.core.survival.FsyncGate
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -27,7 +28,8 @@ class DownloadEngine(
     private val intentDao: IntentDao,
     private val chunkDao: ChunkDao,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val fsyncGate: FsyncGate = FsyncGate()
 ) {
     /**
      * 下载一个 intent。已完成分块由位图跳过，因此重复调用即可实现断点续传。
@@ -122,6 +124,11 @@ class DownloadEngine(
                 files.withFile(destPath) { raf ->
                     raf.seek(chunk.start)
                     raf.write(payload.bytes)
+                    val nowMs = clock()
+                    if (fsyncGate.shouldFsync(nowMs)) {
+                        raf.fd.sync()
+                        fsyncGate.markFsynced(nowMs)
+                    }
                 }
                 bitmapMutex.withLock {
                     bitmap.markDone(chunk.index)
