@@ -1,15 +1,18 @@
 package com.yadown.core.net
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
 import com.yadown.core.transfer.FailureCause
 import com.yadown.core.transfer.RangeRequest
 import com.yadown.core.transfer.RangeResponse
 import com.yadown.core.transfer.RangeSession
 import com.yadown.core.transfer.RangeValidator
 import com.yadown.core.transfer.ValidationResult
-import java.net.InetSocketAddress
+import java.io.Closeable
+import java.io.IOException
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.After
@@ -22,10 +25,94 @@ import org.junit.Test
 /**
  * 真实 OkHttp 路径的协议集成测试：本地 HTTP server 返回各种恶意/异常响应，
  * 验证读取上限、先校验后读、顺序回退与 RangeValidator 的联合行为。
+ *
+ * 不使用 com.sun.net.httpserver：AGP 单测编译类路径不包含 jdk.httpserver。
  */
 class OkHttpRangeSourceTest {
 
-    private val servers = mutableListOf<HttpServer>()
+    private data class HttpRequest(
+        val method: String,
+        val path: String,
+        val headers: Map<String, String>
+    )
+
+    private data class HttpResponse(
+        val code: Int,
+        val headers: Map<String, String> = emptyMap(),
+        val body: ByteArray = ByteArray(0)
+    )
+
+    private class TestHttpServer(
+        private val handler: (HttpRequest) -> HttpResponse
+    ) : Closeable {
+
+        private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
+        private val acceptThread = thread(start = true, isDaemon = true) { acceptLoop() }
+
+        val baseUrl: String
+            get() = "http://127.0.0.1:${socket.localPort}/file"
+
+        override fun close() {
+            runCatching { socket.close() }
+            acceptThread.join(500)
+        }
+
+        private fun acceptLoop() {
+            while (!socket.isClosed) {
+                val client = runCatching { socket.accept() }.getOrNull() ?: break
+                thread(start = true, isDaemon = true) { handle(client) }
+            }
+        }
+
+        private fun handle(client: Socket) {
+            try {
+                client.use { connection ->
+                    val input = connection.getInputStream().bufferedReader(Charsets.ISO_8859_1)
+                    val requestLine = input.readLine() ?: return
+                    val parts = requestLine.split(' ')
+                    val method = parts.getOrNull(0) ?: return
+                    val path = parts.getOrNull(1) ?: "/"
+
+                    val headers = mutableMapOf<String, String>()
+                    while (true) {
+                        val line = input.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val separator = line.indexOf(':')
+                        if (separator > 0) {
+                            headers[line.substring(0, separator).trim().lowercase()] =
+                                line.substring(separator + 1).trim()
+                        }
+                    }
+
+                    val response = handler(HttpRequest(method, path, headers))
+                    val reason = when (response.code) {
+                        200 -> "OK"
+                        206 -> "Partial Content"
+                        416 -> "Range Not Satisfiable"
+                        429 -> "Too Many Requests"
+                        else -> "Error"
+                    }
+                    val head = buildString {
+                        append("HTTP/1.1 ${response.code} $reason\r\n")
+                        response.headers.forEach { (key, value) ->
+                            append("$key: $value\r\n")
+                        }
+                        append("Content-Length: ${response.body.size}\r\n")
+                        append("Connection: close\r\n\r\n")
+                    }
+                    connection.getOutputStream().use { output ->
+                        output.write(head.toByteArray(Charsets.ISO_8859_1))
+                        output.write(response.body)
+                        output.flush()
+                    }
+                }
+            } catch (_: IOException) {
+                // 客户端提前关闭（例如 200 部分区间）是预期行为。
+            }
+        }
+    }
+
+    private val servers = mutableListOf<TestHttpServer>()
     private lateinit var source: OkHttpRangeSource
 
     @Before
@@ -39,38 +126,12 @@ class OkHttpRangeSourceTest {
 
     @After
     fun tearDown() {
-        servers.forEach { it.stop(0) }
+        servers.forEach { it.close() }
         servers.clear()
     }
 
-    private fun serve(handler: (HttpExchange) -> Unit): String {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/") { exchange ->
-            try {
-                handler(exchange)
-            } catch (_: Exception) {
-                // 客户端提前关闭（例如 200 部分区间）是预期行为。
-            } finally {
-                exchange.close()
-            }
-        }
-        server.start()
-        servers += server
-        return "http://127.0.0.1:${server.address.port}/file"
-    }
-
-    private fun send(
-        exchange: HttpExchange,
-        code: Int,
-        body: ByteArray,
-        headers: Map<String, String> = emptyMap()
-    ) {
-        headers.forEach { (key, value) -> exchange.responseHeaders.add(key, value) }
-        exchange.sendResponseHeaders(code, if (body.isEmpty()) -1 else body.size.toLong())
-        if (body.isNotEmpty()) {
-            exchange.responseBody.use { it.write(body) }
-        }
-    }
+    private fun serve(handler: (HttpRequest) -> HttpResponse): TestHttpServer =
+        TestHttpServer(handler).also { servers += it }
 
     private fun bytes(count: Int): ByteArray = ByteArray(count) { (it % 251).toByte() }
 
@@ -100,26 +161,33 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun probeAnd206ReturnExpectedBytes() = runBlocking {
-        val url = serve { exchange ->
-            val range = exchange.requestHeaders.getFirst("Range")
-            if (range == "bytes=0-0") {
-                send(
-                    exchange, 206, bytes(1),
-                    mapOf("Content-Range" to "bytes 0-0/20", "ETag" to "\"v1\"")
+        val server = serve { request ->
+            if (request.headers["range"] == "bytes=0-0") {
+                HttpResponse(
+                    code = 206,
+                    headers = mapOf(
+                        "Content-Range" to "bytes 0-0/20",
+                        "ETag" to "\"v1\""
+                    ),
+                    body = bytes(1)
                 )
             } else {
-                send(
-                    exchange, 206, bytes(10),
-                    mapOf("Content-Range" to "bytes 0-9/20", "ETag" to "\"v1\"")
+                HttpResponse(
+                    code = 206,
+                    headers = mapOf(
+                        "Content-Range" to "bytes 0-9/20",
+                        "ETag" to "\"v1\""
+                    ),
+                    body = bytes(10)
                 )
             }
         }
 
-        val probe = source.probe(url)
-        assertEquals(20L, probe.totalSize)
+        val probe = source.probe(server.baseUrl)
+        assertEquals(20L, probe.totalSize ?: -1L)
         assertTrue(probe.rangeSupported)
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertEquals(10, payload.bytes.size)
         val result = validate(
             payload,
@@ -131,20 +199,25 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun unknownTotalIn206DoesNotFallBackToOneByteContentLength() = runBlocking {
-        val url = serve {
-            send(
-                it, 206, bytes(1),
-                mapOf("Content-Range" to "bytes 0-0/*", "Content-Length" to "1")
+        val server = serve {
+            HttpResponse(
+                code = 206,
+                headers = mapOf(
+                    "Content-Range" to "bytes 0-0/*"
+                ),
+                body = bytes(1)
             )
         }
-        assertNull(source.probe(url).totalSize)
+        assertNull(source.probe(server.baseUrl).totalSize)
     }
 
     @Test
     fun partialRequestReturning200IsRejectedWithoutReadingWholeBody() = runBlocking {
-        val url = serve { send(it, 200, bytes(20)) }
+        val server = serve {
+            HttpResponse(code = 200, body = bytes(20))
+        }
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertEquals(0, payload.bytes.size)
         assertInvalid(
             FailureCause.SERVER_RANGE_UNSUPPORTED,
@@ -154,9 +227,11 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun wholeFile200IsAccepted() = runBlocking {
-        val url = serve { send(it, 200, bytes(20)) }
+        val server = serve {
+            HttpResponse(code = 200, body = bytes(20))
+        }
 
-        val payload = source.readRangeChecked(url, 0, 19, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 19, 20)
         assertEquals(20, payload.bytes.size)
         assertEquals(
             ValidationResult.Valid,
@@ -166,11 +241,14 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun rangeNotSatisfiableIsClassified() = runBlocking {
-        val url = serve {
-            send(it, 416, ByteArray(0), mapOf("Content-Range" to "bytes */20"))
+        val server = serve {
+            HttpResponse(
+                code = 416,
+                headers = mapOf("Content-Range" to "bytes */20")
+            )
         }
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertInvalid(
             FailureCause.RANGE_NOT_SATISFIABLE,
             validate(payload, RangeRequest(0, 9), RangeSession(null, null, 20))
@@ -183,13 +261,13 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun tooManyRequestsCarriesRetryAfter() = runBlocking {
-        val url = serve {
-            send(it, 429, ByteArray(0), mapOf("Retry-After" to "2"))
+        val server = serve {
+            HttpResponse(code = 429, headers = mapOf("Retry-After" to "2"))
         }
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertEquals(429, payload.statusCode)
-        assertEquals(2000L, payload.retryAfterMs)
+        assertEquals(2000L, payload.retryAfterMs ?: -1L)
         assertInvalid(
             FailureCause.RATE_LIMITED,
             validate(payload, RangeRequest(0, 9), RangeSession(null, null, 20))
@@ -198,14 +276,15 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun truncated206IsRejectedAsChecksumMismatch() = runBlocking {
-        val url = serve {
-            send(
-                it, 206, bytes(5),
-                mapOf("Content-Range" to "bytes 0-9/20")
+        val server = serve {
+            HttpResponse(
+                code = 206,
+                headers = mapOf("Content-Range" to "bytes 0-9/20"),
+                body = bytes(5)
             )
         }
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertEquals(5, payload.bytes.size)
         assertInvalid(
             FailureCause.CHECKSUM_MISMATCH,
@@ -215,14 +294,15 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun oversized206IsCappedAtExpectedPlusOne() = runBlocking {
-        val url = serve {
-            send(
-                it, 206, bytes(11),
-                mapOf("Content-Range" to "bytes 0-9/20")
+        val server = serve {
+            HttpResponse(
+                code = 206,
+                headers = mapOf("Content-Range" to "bytes 0-9/20"),
+                body = bytes(11)
             )
         }
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertEquals(11, payload.bytes.size)
         assertInvalid(
             FailureCause.CHECKSUM_MISMATCH,
@@ -232,17 +312,18 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun encoded206IsRejected() = runBlocking {
-        val url = serve {
-            send(
-                it, 206, bytes(10),
-                mapOf(
+        val server = serve {
+            HttpResponse(
+                code = 206,
+                headers = mapOf(
                     "Content-Range" to "bytes 0-9/20",
                     "Content-Encoding" to "gzip"
-                )
+                ),
+                body = bytes(10)
             )
         }
 
-        val payload = source.readRangeChecked(url, 0, 9, 20)
+        val payload = source.readRangeChecked(server.baseUrl, 0, 9, 20)
         assertEquals("gzip", payload.contentEncoding)
         assertInvalid(
             FailureCause.SERVER_SILENT_REJECTION,
@@ -252,12 +333,14 @@ class OkHttpRangeSourceTest {
 
     @Test
     fun sequentialReadStreamsAllBytes() = runBlocking {
-        val url = serve { send(it, 200, bytes(20)) }
+        val server = serve {
+            HttpResponse(code = 200, body = bytes(20))
+        }
         var progress = 0L
         val received = ArrayList<Byte>()
 
         val result = source.readSequential(
-            url = url,
+            url = server.baseUrl,
             start = 0,
             onProgress = { progress = it },
             onBytes = { chunk -> chunk.forEach { received += it } }
