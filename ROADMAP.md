@@ -93,6 +93,7 @@
 | 工程初始化（AGENTS/ARCHITECTURE/ROADMAP） | 已完成 | 2026-11-06 |
 | Gradle 骨架（Kotlin+Compose+Hilt+Room） | 已完成 | UI 对齐 AiCode；`checkDebugAarMetadata` 与依赖图解析均通过（compileSdk 36） |
 | 容器内 APK 构建 | 不可行 | aapt2 2.19 不支持 android-36 资源表，须 CI/真机构建（见 AGENTS.md R8） |
+| CI 构建（GitHub Actions） | 已验证成功 | run 42171049628，产物 Yadown-debug-apk（约 19.8 MB）；流程含资源编译/Kotlin 编译/KSP/打包 |
 | P0/T0.1 多链路聚合 | 待开始 | 探针代码已就绪，待真机回填 |
 | P0/T0.2 mDNS | 待开始 | 探针代码已就绪，待真机回填 |
 | P0/T0.3 增量安装降级 | 待开始 | 探针代码已就绪，待真机回填 |
