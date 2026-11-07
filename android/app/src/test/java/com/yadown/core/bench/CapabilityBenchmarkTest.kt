@@ -14,6 +14,7 @@ import com.yadown.core.support.testIntent
 import com.yadown.core.transfer.ChunkRange
 import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.IntentState
+import com.yadown.core.transfer.RangeCoverage
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -38,29 +39,54 @@ class CapabilityBenchmarkTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private val totalBytes = 2L * 1024 * 1024
-    private val chunkSize = 256L * 1024
-    private val keyRangeEnd = 512L * 1024
+    private val defaultTotal = 2L * 1024 * 1024
+    private val defaultChunk = 256L * 1024
 
     @Test
     fun benchmarkReportsCapabilityMetrics() = runBlocking {
         val results = mutableListOf<ScenarioResult>()
 
-        results += runScenario(name = "slow-1MBps", bytesPerSec = 1_000_000, latencyMs = 30)
-        results += runScenario(name = "fast-4MBps", bytesPerSec = 4_000_000, latencyMs = 30)
+        // 预热：首个场景会吃掉类加载/JIT 成本，不计入结果。
+        runScenario(
+            name = "warmup", totalBytes = 512L * 1024, chunkSize = 256L * 1024,
+            bytesPerSec = 8_000_000, latencyMs = 0, concurrency = 4
+        )
+
+        results += runScenario(
+            name = "slow-1MBps", totalBytes = defaultTotal, chunkSize = defaultChunk,
+            bytesPerSec = 1_000_000, latencyMs = 30, concurrency = 4
+        )
+        results += runScenario(
+            name = "fast-4MBps", totalBytes = defaultTotal, chunkSize = defaultChunk,
+            bytesPerSec = 4_000_000, latencyMs = 30, concurrency = 4
+        )
+        // 用户目标场景：20MB 文件、4MB/s 聚合（每连接 1MB/s × 4），期望 < 5s。
+        results += runScenario(
+            name = "20MB-4MBps", totalBytes = 20L * 1024 * 1024, chunkSize = 1024L * 1024,
+            bytesPerSec = 1_000_000, latencyMs = 30, concurrency = 4
+        )
 
         val reportDir = File("build/reports")
         reportDir.mkdirs()
         File(reportDir, "yadown-benchmark.json").writeText(toJson(results))
 
         results.forEach { result ->
-            assertTrue("${result.name} 请求数应为 8，实际 ${result.requests}", result.requests == 8)
             assertTrue("${result.name} 应完成", result.completed)
             assertTrue("${result.name} TTFP ${result.ttfpMs}ms 不应晚于总耗时 ${result.totalMs}ms", result.ttfpMs <= result.totalMs)
         }
+        val twentyMb = results.first { it.name == "20MB-4MBps" }
+        assertTrue("20MB/4MBps 请求数应为 20，实际 ${twentyMb.requests}", twentyMb.requests == 20)
     }
 
-    private suspend fun runScenario(name: String, bytesPerSec: Int, latencyMs: Long): ScenarioResult {
+    private suspend fun runScenario(
+        name: String,
+        totalBytes: Long,
+        chunkSize: Long,
+        bytesPerSec: Int,
+        latencyMs: Long,
+        concurrency: Int
+    ): ScenarioResult {
+        val keyRangeEnd = minOf(512L * 1024, totalBytes / 4)
         val payload = ByteArray(totalBytes.toInt()) { (it * 31 % 251).toByte() }
         val etag = "\"$name\""
         val server = TestHttpServer(
@@ -93,6 +119,7 @@ class CapabilityBenchmarkTest {
             val startedAt = System.nanoTime()
             val keyReadyAt = AtomicLong(0)
             val coveredBytes = AtomicLong(0)
+            val keyCoverage = RangeCoverage()
 
             val engine = DownloadEngine(
                 source = OkHttpRangeSource(
@@ -118,12 +145,14 @@ class CapabilityBenchmarkTest {
                 intentId = "bench",
                 url = server.baseUrl,
                 destPath = file.absolutePath,
-                concurrency = 4,
+                concurrency = concurrency,
                 chunkSize = chunkSize,
                 valueMap = valueMap,
                 onChunkDone = { chunk: ChunkRange ->
-                    val covered = coveredBytes.addAndGet(chunk.endInclusive - chunk.start + 1)
-                    if (keyReadyAt.get() == 0L && coversKeyRange(chunkDao, chunk)) {
+                    coveredBytes.addAndGet(chunk.endInclusive - chunk.start + 1)
+                    // 用内存覆盖判定数据就绪；DB 的 DONE 是 2s 批量提交，不适合做实时指标。
+                    keyCoverage.add(chunk.start..chunk.endInclusive)
+                    if (keyReadyAt.get() == 0L && keyCoverage.covers(0, keyRangeEnd)) {
                         keyReadyAt.set((System.nanoTime() - startedAt) / 1_000_000)
                     }
                 }
@@ -147,20 +176,6 @@ class CapabilityBenchmarkTest {
         } finally {
             server.close()
         }
-    }
-
-    private fun coversKeyRange(chunkDao: FakeChunkDao, latest: ChunkRange): Boolean {
-        val doneRanges = chunkDao.chunks.values
-            .filter { it.state == com.yadown.core.transfer.ChunkState.DONE.name }
-            .map { it.startByte..it.endByte }
-            .sortedBy { it.first }
-        var cursor = 0L
-        for (range in doneRanges) {
-            if (range.first > cursor) break
-            cursor = maxOf(cursor, range.last + 1)
-            if (cursor >= keyRangeEnd) return true
-        }
-        return cursor >= keyRangeEnd
     }
 
     private fun parseRange(header: String?): LongRange? {

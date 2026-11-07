@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class DownloadProgress(val downloadedBytes: Long, val totalBytes: Long)
 
@@ -635,7 +636,10 @@ class DownloadEngine(
                     linkId = linkId
                 )
             }
-            while (work.isActive) {
+            while (true) {
+                // 块在轮询周期内完成时立即返回，不再等满 500ms（旧实现每块固定最多 +500ms）。
+                val payload = withTimeoutOrNull(WATCHDOG_POLL_MS) { work.await() }
+                if (payload != null) return@coroutineScope payload
                 if (watchdog.isStalled(clock())) {
                     stalled.set(true)
                     work.cancel()
@@ -653,7 +657,6 @@ class DownloadEngine(
                     work.cancel()
                     break
                 }
-                delay(WATCHDOG_POLL_MS)
             }
             try {
                 work.await()
