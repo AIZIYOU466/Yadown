@@ -247,7 +247,8 @@ class DownloadRepository @Inject constructor(
     /** 下载执行体：前台服务与 WorkManager 两条 Carrier 共用，区别只在谁负责保活。 */
     private suspend fun execute(intentId: String, url: String) {
         val startedAt = System.currentTimeMillis()
-        SessionTelemetry.begin(intentId, topologySettings.topology.name)
+        val intentSize = intentDao.getById(intentId)?.totalSize
+        SessionTelemetry.begin(intentId, topologySettings.resolve(intentSize).name)
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)

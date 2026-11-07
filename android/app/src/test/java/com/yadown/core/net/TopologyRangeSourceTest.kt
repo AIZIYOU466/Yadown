@@ -138,4 +138,33 @@ class TopologyRangeSourceTest {
         assertEquals(listOf("readRangeChecked"), reuse.calls)
         assertEquals(listOf("readRangeChecked"), multi.calls)
     }
+
+    @Test
+    fun autoTopologyPicksMultiForLargeFilesAndReuseForSmall() {
+        val reuse = RecordingSource("reuse")
+        val multi = RecordingSource("multi")
+        val source = TopologyRangeSource(
+            reuse = reuse,
+            multiConnection = { multi },
+            topology = { TransportTopology.AUTO },
+            resolve = { size ->
+                if (size != null && size >= 8L * 1024 * 1024) {
+                    TransportTopology.MULTI_CONNECTION
+                } else {
+                    TransportTopology.REUSE
+                }
+            }
+        )
+
+        runBlocking {
+            source.readRangeChecked("http://host/file", 0, 1, 16L * 1024 * 1024, {}, null)
+        }
+        runBlocking {
+            source.readRangeChecked("http://host/file", 0, 1, 1L * 1024 * 1024, {}, null)
+        }
+        runBlocking { source.probe("http://host/file") }
+
+        assertEquals(listOf("readRangeChecked", "probe"), reuse.calls)
+        assertEquals(listOf("readRangeChecked"), multi.calls)
+    }
 }

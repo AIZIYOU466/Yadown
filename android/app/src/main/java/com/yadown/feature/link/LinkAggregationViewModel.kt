@@ -57,7 +57,7 @@ class LinkAggregationViewModel @Inject constructor(
         _state.update { it.copy(allowMetered = allow) }
     }
 
-    /** 传输拓扑 A/B：开启后并发分块各建一条 TCP（HTTP/1.1），关闭走 HTTP/2 单连接复用。 */
+    /** 传输拓扑：默认自动（大文件多连接、小文件单连接），手动开关可强制多连接或恢复自动。 */
     fun setMultiConnection(enabled: Boolean) {
         topologySettings.topology = if (enabled) {
             TransportTopology.MULTI_CONNECTION

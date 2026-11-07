@@ -55,7 +55,8 @@ object TransferModule {
                     peers
                 )
             },
-            topology = { topology.topology }
+            topology = { topology.topology },
+            resolve = { totalSize -> topology.resolve(totalSize) }
         ),
         linkSources = { linkId -> links.sourceFor(linkId) },
         health = links.health

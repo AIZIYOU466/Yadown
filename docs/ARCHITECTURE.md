@@ -450,7 +450,7 @@ fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
 - 熔断：10s 窗口失败率 >50% 或连续 3 次失败即熔断；429 按 `Retry-After` 冷却且不裂解；DNS 失败 5s 冷却；冷却后允许半开探测，成功清零。
 - 观测：`TransferTelemetry` 进程累计 + `SessionTelemetry` 按 intent 的会话统计（完成/失败/字节/重试/stall/慢裂解/耗时/平均速度/峰值并发/本任务新建连接）；debug 构建顶栏「诊断」分栏展示。真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
 - 文件名：`DownloadPaths.fileNameOf` 优先解析签名 URL 的 `response-content-disposition`/`rscd` 中的 `filename=`，再回退 path 最后一段，并过滤路径分隔符与控制字符；任务卡/通知/存储均使用真实文件名。
-- 拓扑观察（2026-11-07）：两次 44.6MB 下载速度无差异、进程累计 `connect 1`，说明连接复用/TLS 握手不是瓶颈，稳态受单 TCP 连接带宽约束；H2 把 8–16 个请求压成一条连接上的流。下一步用连接池分片或 H1 多连接做 A/B，以会话级 `connectStarts`/峰值并发/平均速度判定，不用进程累计值。
+- 拓扑观察（2026-11-07）：同一 22.4MB Azure Blob 链接 8 次 A/B（各 4 次）：REUSE 中位 13s/1.69MB/s，MULTI_CONNECTION 中位 7s/2.97MB/s（约 1.76x）；单连接 H2 稳定在 ~1.7MB/s，多连接可叠加到 ~3MB/s。之前两次异常样本（REUSE 6s vs MULTI 20s）是网络波动，不作为结论。默认改为 `AUTO`：总大小 ≥8MB 走 MULTI_CONNECTION，小文件/未知大小保持 REUSE；手动开关可强制。
 - 拓扑 A/B 落地（2026-11-07，真机数据待回填）：`TransportTopologySettings` + `TopologyRangeSource` 提供两种模式——`REUSE`（默认，保留 H2 单连接复用，行为不变）与 `MULTI_CONNECTION`（强制 HTTP/1.1，并发分块各占一条 TCP）；入口在「多链路加速」对话框，切换后下一个分块生效，多连接客户端延迟创建、未启用时不多出连接池。该开关只作用于单链路默认源；多链路每条链路本就有独立客户端与连接池，不受影响。`SessionTelemetry` 记录会话开始时的拓扑，诊断页与 `connectStarts`/峰值并发/平均速度同屏展示。默认值不翻转，必须用同一设备/服务器/文件对比两组数据后再决定。
 - 已知限制：整块读入内存后落盘；慢裂解仍会丢弃已传字节，但已限制为块内 <25% 且低速/单连接不裂解；零丢弃需要流式读取+部分提交（后续）。
 

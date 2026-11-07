@@ -15,11 +15,13 @@ import android.content.Context
  * 除底层 [RangeSource] 外，两种模式共用同一套调度、四重校验与提交协议。
  */
 enum class TransportTopology {
+    /** 按文件大小自动选择：大文件多连接、小文件单连接。 */
+    AUTO,
     REUSE,
     MULTI_CONNECTION
 }
 
-/** 拓扑选择持久化。默认 [TransportTopology.REUSE]，保证未做真机 A/B 前行为不变。 */
+/** 拓扑选择持久化。默认 [TransportTopology.AUTO]：大文件走多连接，小文件保持单连接。 */
 class TransportTopologySettings(context: Context) {
 
     private val prefs = context.getSharedPreferences("transport_topology", Context.MODE_PRIVATE)
@@ -27,13 +29,25 @@ class TransportTopologySettings(context: Context) {
     var topology: TransportTopology
         get() = prefs.getString(KEY_TOPOLOGY, null)
             ?.let { name -> TransportTopology.entries.firstOrNull { it.name == name } }
-            ?: TransportTopology.REUSE
+            ?: TransportTopology.AUTO
         set(value) {
             prefs.edit().putString(KEY_TOPOLOGY, value.name).apply()
         }
 
+    /** 把 [AUTO] 按总大小展开成具体拓扑；未知大小时保守走单连接。 */
+    fun resolve(totalSize: Long?): TransportTopology = when (topology) {
+        TransportTopology.AUTO ->
+            if (totalSize != null && totalSize >= AUTO_MULTI_THRESHOLD_BYTES) {
+                TransportTopology.MULTI_CONNECTION
+            } else {
+                TransportTopology.REUSE
+            }
+        else -> topology
+    }
+
     private companion object {
         const val KEY_TOPOLOGY = "topology"
+        const val AUTO_MULTI_THRESHOLD_BYTES = 8L * 1024 * 1024
     }
 }
 
@@ -46,13 +60,14 @@ class TransportTopologySettings(context: Context) {
 class TopologyRangeSource(
     private val reuse: RangeSource,
     private val multiConnection: () -> RangeSource,
-    private val topology: () -> TransportTopology
+    private val topology: () -> TransportTopology,
+    private val resolve: (Long?) -> TransportTopology = { topology() }
 ) : RangeSource {
 
     private val multi by lazy(multiConnection)
 
     override suspend fun probe(url: String, linkId: String?): ProbeResult =
-        current().probe(url, linkId)
+        current(null).probe(url, linkId)
 
     override suspend fun readRange(
         url: String,
@@ -60,7 +75,7 @@ class TopologyRangeSource(
         endInclusive: Long,
         onProgress: (Long) -> Unit,
         linkId: String?
-    ): RangePayload = current().readRange(url, start, endInclusive, onProgress, linkId)
+    ): RangePayload = current(null).readRange(url, start, endInclusive, onProgress, linkId)
 
     override suspend fun readRangeChecked(
         url: String,
@@ -70,17 +85,18 @@ class TopologyRangeSource(
         onProgress: (Long) -> Unit,
         linkId: String?
     ): RangePayload =
-        current().readRangeChecked(url, start, endInclusive, totalSize, onProgress, linkId)
+        current(totalSize).readRangeChecked(url, start, endInclusive, totalSize, onProgress, linkId)
 
     override suspend fun readSequential(
         url: String,
         start: Long,
         onProgress: (Long) -> Unit,
         onBytes: (ByteArray) -> Unit
-    ): SequentialResult = current().readSequential(url, start, onProgress, onBytes)
+    ): SequentialResult = current(null).readSequential(url, start, onProgress, onBytes)
 
-    private fun current(): RangeSource = when (topology()) {
+    private fun current(totalSize: Long?): RangeSource = when (resolve(totalSize)) {
         TransportTopology.REUSE -> reuse
         TransportTopology.MULTI_CONNECTION -> multi
+        TransportTopology.AUTO -> reuse
     }
 }
