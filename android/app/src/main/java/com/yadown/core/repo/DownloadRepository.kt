@@ -266,12 +266,6 @@ class DownloadRepository @Inject constructor(
             null
         }
         val plannedMultiLimit = learnedLimit ?: topologySettings.multiConnectionLimit
-        val sessionBudget = TopologyConcurrency.concurrencyFor(
-            linkCount = 1,
-            topology = effectiveTopology,
-            multiLimit = plannedMultiLimit
-        )
-        SessionTelemetry.begin(intentId, effectiveTopology.name, sessionBudget)
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)
@@ -281,18 +275,19 @@ class DownloadRepository @Inject constructor(
             val descriptor = descriptors[intentId] ?: loadDescriptor(intentId)
             val routes = routesFor(intentId, url)
             val linkCount = routes.mapNotNull { it.linkId }.distinct().size
-            // 单链路 16、双链路 24；MULTI_CONNECTION 用可配置连接数（默认 16）。
+            // 单链路 16、双链路 24；MULTI_CONNECTION 用可配置连接数（默认 8，档位 8/12/16）。
             val concurrency = TopologyConcurrency.concurrencyFor(
                 linkCount = linkCount,
                 topology = effectiveTopology,
                 multiLimit = plannedMultiLimit
             )
+            // 会话预算先于下载登记：它是本任务的唯一并发权威，也是 per-key 闸门的上限。
+            SessionTelemetry.begin(intentId, effectiveTopology.name, concurrency)
             TransferLimiter.updateGlobalLimit(concurrency)
-            // 多连接拓扑下先重建连接并预热，避免复用跨任务劣化的旧连接；
+            // 多连接拓扑下先重建连接，避免复用跨任务劣化的旧连接；
             // 多任务并发时共享连接池，清空会打断其他任务，故只在单任务时重置。
-            if (effectiveTopology == TransportTopology.MULTI_CONNECTION) {
-                if (jobs.size <= 1) source.resetConnections()
-                runCatching { source.warmup(url, intentSize, plannedMultiLimit) }
+            if (effectiveTopology == TransportTopology.MULTI_CONNECTION && jobs.size <= 1) {
+                source.resetConnections()
             }
             engine.download(
                 intentId = intentId,
@@ -368,11 +363,12 @@ class DownloadRepository @Inject constructor(
             speeds.update { it - intentId }
             val session = SessionTelemetry.finish(intentId)
             // 只在无失败、有实际字节的会话上学习连接数，避免把网络故障当档位差异。
+            // 奖励用稳态吞吐（首块开始到末块完成），否则高档位自己为启动开销扣分。
             if (session != null && host != null &&
                 effectiveTopology == TransportTopology.MULTI_CONNECTION &&
                 session.chunksFailed == 0L && session.bytesDone > 0
             ) {
-                hostTuning.record(host, session.connectionBudget, session.avgBytesPerSec)
+                hostTuning.record(host, session.connectionBudget, session.steadyStateBytesPerSec)
             }
             if (jobs.isEmpty()) stopService()
         }

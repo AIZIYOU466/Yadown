@@ -112,9 +112,6 @@ class TopologyRangeSource(
         TransportTopology.AUTO -> reuse
     }
 
-    override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
-        current(totalSize).warmup(url, totalSize, connections)
-
     override fun resetConnections() {
         reuse.resetConnections()
         if (multiDelegate.isInitialized()) multiDelegate.value.resetConnections()

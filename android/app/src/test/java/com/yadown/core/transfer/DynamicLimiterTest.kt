@@ -77,4 +77,12 @@ class DynamicLimiterTest {
         assertEquals(0, limiter.snapshot().globalInUse)
         assertTrue(limiter.snapshot().perKeyInUse.isEmpty())
     }
+
+    @Test
+    fun snapshotExposesEffectivePerKeyLimit() = runBlocking {
+        val limiter = DynamicLimiter(initialGlobalLimit = 16, defaultPerKeyLimit = 16)
+        limiter.acquire("a", perKeyLimit = 8)
+
+        assertEquals(8, limiter.snapshot().perKeyLimit["a"])
+    }
 }

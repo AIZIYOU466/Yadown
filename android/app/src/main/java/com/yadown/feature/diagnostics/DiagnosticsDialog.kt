@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.yadown.core.telemetry.SessionTelemetry
 import com.yadown.core.theme.Spacing
 import com.yadown.core.theme.semanticColors
 import java.util.Locale
@@ -55,12 +56,18 @@ fun DiagnosticsDialog(
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
+                        "稳态 ${formatSpeed(session.steadyStateBytesPerSec)}" +
+                            "（传输窗口 ${formatWindow(session)}）",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
                         "峰值并发 ${session.peakConcurrentRequests} · 新建连接 ${session.connectStarts}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
                         buildString {
                             append("首块 ${session.firstChunkAtMs?.let { "${it}ms" } ?: "-"}")
+                            append("（首请求 ${session.firstRequestAtMs?.let { "${it}ms" } ?: "-"}）")
                             append(" · 落盘提交 ${session.flushMs?.let { "${it}ms" } ?: "-"}")
                             append(" · 完成校验 ${session.verifyMs?.let { "${it}ms" } ?: "-"}")
                         },
@@ -86,13 +93,18 @@ fun DiagnosticsDialog(
                 if (state.hostTuning.isNotEmpty()) {
                     Text("连接数学习（每 host）", style = MaterialTheme.typography.titleSmall)
                     Text(
+                        "连接数→稳态 MB/s（n=样本数，* 为当前最优）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.semanticColors.subtleText
+                    )
+                    Text(
                         state.hostTuning,
                         style = MaterialTheme.typography.bodySmall
                     )
                     HorizontalDivider()
                 }
 
-                Text("进程累计（含历史）", style = MaterialTheme.typography.titleSmall)
+                Text("进程累计（本进程）", style = MaterialTheme.typography.titleSmall)
                 state.telemetry?.let { telemetry ->
                     Text(
                         "完成 ${telemetry.chunksDone} · 失败 ${telemetry.chunksFailed}",
@@ -120,11 +132,19 @@ fun DiagnosticsDialog(
                 HorizontalDivider()
 
                 Text("连接", style = MaterialTheme.typography.titleSmall)
+                state.session?.let { session ->
+                    Text(
+                        "本次复用率 ${percent(session.reuseRate)}" +
+                            "（call ${session.callStarts} / connect ${session.connectStarts}）",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 state.connections?.let { connections ->
                     Text(
-                        "复用率 ${percent(connections.reuseRate)}" +
-                            "（call ${connections.callStarts} / connect ${connections.connectStarts}）",
-                        style = MaterialTheme.typography.bodySmall
+                        "进程累计 call ${connections.callStarts} / connect ${connections.connectStarts}" +
+                            "（复用 ${percent(connections.reuseRate)}）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.semanticColors.subtleText
                     )
                 }
 
@@ -136,10 +156,11 @@ fun DiagnosticsDialog(
                         "全局 ${limiter.globalInUse}/${limiter.globalLimit}",
                         style = MaterialTheme.typography.bodySmall
                     )
-                    if (limiter.perKeyInUse.isNotEmpty()) {
+                    if (limiter.perKeyLimit.isNotEmpty()) {
                         Text(
-                            "per-key " + limiter.perKeyInUse.entries
-                                .joinToString(" · ") { "${it.key}=${it.value}" },
+                            "per-key " + limiter.perKeyLimit.entries.joinToString(" · ") { (key, limit) ->
+                                "$key=${limiter.perKeyInUse[key] ?: 0}/$limit"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.semanticColors.subtleText
                         )
@@ -162,6 +183,12 @@ private fun formatSpeed(bytesPerSec: Double): String =
     } else {
         String.format(Locale.US, "%.0f KB/s", bytesPerSec / 1024)
     }
+
+private fun formatWindow(session: SessionTelemetry.Session): String {
+    val start = session.firstRequestAtMs ?: return "-"
+    val end = session.transferFinishedAtMs ?: return "-"
+    return String.format(Locale.US, "%.1fs", (end - start).coerceAtLeast(0) / 1000.0)
+}
 
 private fun formatDuration(ms: Long): String {
     val seconds = ms / 1000

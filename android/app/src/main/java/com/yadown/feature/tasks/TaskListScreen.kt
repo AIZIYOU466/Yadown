@@ -16,12 +16,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -38,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yadown.BuildConfig
@@ -64,6 +69,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
     var showPeers by remember { mutableStateOf(false) }
     var showLinks by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+    var showDebugMenu by remember { mutableStateOf(false) }
     var showBackgroundGuide by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<TaskUi?>(null) }
@@ -76,14 +82,44 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Yadown", fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Text(
+                        "Yadown",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 actions = {
                     TextButton(onClick = { showBackgroundGuide = true }) { Text("后台") }
                     TextButton(onClick = { showPeers = true }) { Text("附近") }
                     TextButton(onClick = { showLinks = true }) { Text("多链路") }
                     if (BuildConfig.DEBUG) {
-                        TextButton(onClick = { showP0 = true }) { Text("P0") }
-                        TextButton(onClick = { showDiagnostics = true }) { Text("诊断") }
+                        Box {
+                            IconButton(onClick = { showDebugMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "更多调试入口")
+                            }
+                            DropdownMenu(
+                                expanded = showDebugMenu,
+                                onDismissRequest = { showDebugMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("P0 验证") },
+                                    onClick = {
+                                        showDebugMenu = false
+                                        showP0 = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("运行诊断") },
+                                    onClick = {
+                                        showDebugMenu = false
+                                        showDiagnostics = true
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             )

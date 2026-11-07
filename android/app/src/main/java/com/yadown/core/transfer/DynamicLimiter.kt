@@ -18,7 +18,9 @@ class DynamicLimiter(
     data class Snapshot(
         val globalLimit: Int,
         val globalInUse: Int,
-        val perKeyInUse: Map<String, Int>
+        val perKeyInUse: Map<String, Int>,
+        /** 每个 key 实际生效的并发上限，用于判断“预算未真正生效”。 */
+        val perKeyLimit: Map<String, Int>
     )
 
     private val mutex = Mutex()
@@ -61,7 +63,7 @@ class DynamicLimiter(
     }
 
     suspend fun snapshot(): Snapshot = mutex.withLock {
-        Snapshot(globalLimit, globalInUse, perKeyInUse.toMap())
+        Snapshot(globalLimit, globalInUse, perKeyInUse.toMap(), perKeyLimits.toMap())
     }
 
     private fun canAcquire(key: String): Boolean =

@@ -137,13 +137,14 @@
 | P3 内容语义层 | 已完成（真机项待验证） | **T3.1 MP4 moov 优先（可边下边播）/ T3.2 APK Manifest 优先 / T3.3 PDF xref+Root 优先 / T3.4 AvailabilityContract 驱动 UI 解锁 / T3.5 未知格式顺序传输**；语义优先调度只改排队不动分块边界；APK 受 T0.3 约束仍为「下完再装」；PDF 查看器未接入，暂不承诺部分预览 |
 | P4 多源协同层 | T4.1/T4.4/T4.2/T4.3 已完成；T4.5 功能骨架完成，性能待前置优化后回填 | T4.1 SourceHealthRegistry / T4.4 源站+镜像路由 / T4.2 mDNS 发现端 / T4.3 peer TLS 传输 / T4.5 多链路骨架；**性能验收前置**：单链路事件驱动裂解、连接池治理、I/O 非阻塞化 |
 | P5 集成真机验证 | 自动化部分完成（P5.1/P5.2）；真机项未开始 | 端到端 mock server 与断点恢复测试已入单测；首播/掉电/弱网/ROM/媒体库/边下边播清单待真机回填 |
-| 单链路调度优化（P1/P2） | 已完成（容器级 + 单测，真机指标待回填） | 事件驱动慢块裂解（`ChunkSplitPolicy`：全局 <64KB/s 不裂解、已传 <25%、per-key≥2）；动态全局限额（单链路 16 / 双链路 24）、per-key 默认 8/上限 16/下限 2；OkHttp per-host 32；健康度迟滞；401/403 归因 LINK_EXPIRED（probe 不再把错误页当文件）；会话级连接/并发/速度观测；签名 URL 真实文件名解析 |
+| 单链路调度优化（P1/P2） | 已完成（容器级 + 单测，真机指标待回填） | 事件驱动慢块裂解（`ChunkSplitPolicy`：全局 <64KB/s 不裂解、已传 <25%、per-key≥2）；动态全局限额（单链路 16 / 双链路 24）、per-key 与会话预算同源；OkHttp per-host 32；健康度迟滞；401/403 归因 LINK_EXPIRED（probe 不再把错误页当文件）；会话级连接/并发/速度观测；签名 URL 真实文件名解析 |
 | 能力解锁基准（新增） | 已落地（容器） | `CapabilityBenchmarkTest`（含 warmup、内存覆盖 TTFP）+ `TestHttpServer` 限速/RTT + `tools/benchmark.sh`；20MB/4MBps 聚合 4.87s，2MB/4MBps 0.32s。 |
 | 固定开销修复 | 已落地（容器） | `readRangeWithWatchdog` 500ms 轮询量化 → `withTimeoutOrNull` 即时返回；4MB/s 2MB 总耗时 1028→324ms。 |
 | fsync 语义优化 | 已落地（容器） | `WritePipeline.flush(syncMetadata)`；周期提交 `force(false)`、最终 `force(true)`；预分配后 `fd.sync()` 保证长度元数据；20MB 基准 4.86s。 |
-| 发布异步 + 连接预热 | 已落地（容器） | `publishCompleted` 后台 launch 不阻塞完成；`RangeSource.warmup` 在 MULTI 下预热 N 条连接（`WarmupTest` 验证多条 TCP）；块大小自适应暂缓（需持久化 chunkSize，风险 > 收益）。 |
+| 发布异步 + 连接预热 | 预热已移除（2026-11-08） | `publishCompleted` 仍后台 launch 不阻塞完成；`RangeSource.warmup` 已删除：MULTI 下第一波分块本身建连，预热只会在池容量不足时白付握手、且 `await` 在首块之前；块大小自适应暂缓（需持久化 chunkSize，风险 > 收益）。 |
+| 连接池治理 + 并发闸门统一（新增） | 已落地（容器级 + 真机数据归因） | OkHttp 默认池只留 5 条空闲连接 → `ConnectionPool(32, 5min)`；真机 23 分块/预算 16 的 `call 40 / connect 28` 拆为 `1 探测 + 16 预热 + 23 分块` 与 `1 + 16 + 11`，48% 分块重连，容器复现后修复（第二波重连 11→0，292→84ms）；per-key 闸门改为与会话预算同源；预算用真实 `linkCount`；学习奖励改为稳态吞吐；诊断页新增 per-key 上限、真实峰值并发、会话级复用率与全档位样本。`ConnectionPoolSizingTest` 锁定零重连。 |
 | 进度与阶段遥测 | 已落地（容器） | 块内字节进度 200ms 上报（进度条不再静止）；`firstChunkAtMs`/`flushMs`/`verifyMs` 进诊断页；`recordEvent` 后台化；`resetConnections()` 任务开始重建连接池。 |
 | 传输拓扑优化（P4 前置） | 已验证（容器 + 真机 A/B） | Azure Blob 8 次：REUSE 中位 13s/1.69MB/s，MULTI 16 中位 7s/2.97MB/s（~1.76x）；GitHub 预算 A/B（3/2/3 次）：8 → 中位 8s/2.69MB/s（3 条 TCP，复用 67–72%）、12 → 18.5s/1.28、16 → 16s/1.37。默认 `AUTO`（≥8MB MULTI），多连接默认 **8**（4/6/8/12/16 可调）；新增每 host 连接数学习（`HostTuningStore`，8/12/16 探索后选 EWMA 最优，诊断页可见）；容器 371 全绿。两 CDN 甜点不同，靠 host 学习适配。|
 | I/O 非阻塞化（P3） | 已完成（容器级 + 单测，真机指标待回填） | 异步写盘管线（有界队列 + FileChannel 定位写）、2s 批量 fsync/DB DONE/位图提交（DB DONE ≤ 持久化字节）、RangeReadySignal 唤醒播放器 DataSource；Direct I/O 因缺少 native/对齐能力不实现 |
 
-*ROADMAP 版本：v2.8 — 2026-11-07*
+*ROADMAP 版本：v2.9 — 2026-11-08*

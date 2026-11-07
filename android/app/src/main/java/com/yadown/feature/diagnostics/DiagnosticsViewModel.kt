@@ -9,6 +9,7 @@ import com.yadown.core.telemetry.TransferTelemetry
 import com.yadown.core.transfer.DynamicLimiter
 import com.yadown.core.transfer.TransferLimiter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.Locale
 import javax.inject.Inject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,14 +50,18 @@ class DiagnosticsViewModel @Inject constructor(
         }
     }
 
+    /** 每个 host 列出所有已探索档位：只看最优档无法判断学习是否收敛，也看不出哪档被跳过了。 */
     private fun formatHostTuning(): String = hostTuning.snapshot().entries
         .take(2)
         .joinToString("\n") { (host, samples) ->
             val best = samples.values.maxByOrNull { it.throughput }
-            if (best == null) host else {
-                "$host → ${best.limit} 连接（${(best.throughput / 1_000_000).formatMb() }MB/s, n=${best.samples}）"
+            val arms = samples.values.sortedBy { it.limit }.joinToString(" · ") { sample ->
+                val mark = if (best != null && sample.limit == best.limit) "*" else ""
+                "${sample.limit}→${formatMb(sample.throughput)}$mark(n=${sample.samples})"
             }
+            "$host\n$arms"
         }
 
-    private fun Double.formatMb(): String = String.format("%.2f", this)
+    private fun formatMb(bytesPerSec: Double): String =
+        String.format(Locale.US, "%.2f", bytesPerSec / (1024.0 * 1024.0))
 }

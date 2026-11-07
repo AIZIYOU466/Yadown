@@ -167,6 +167,8 @@ class DownloadEngine(
             .coerceAtLeast(plan.chunks.size)
         var failedOnce = false
         var firstFailure: DownloadException? = null
+        // 只在真正发出请求（取得传输许可）时计入并发，排队等许可的块不算在飞。
+        val requestsInFlight = AtomicInteger()
 
         coroutineScope {
             val results = Channel<Outcome>(Channel.UNLIMITED)
@@ -188,10 +190,6 @@ class DownloadEngine(
                         available = { candidate -> !breaker.isOpen(candidate.healthKey, clock()) }
                     )
                     inFlight.getValue(route.healthKey).incrementAndGet()
-                    SessionTelemetry.onPeakConcurrency(
-                        intentId,
-                        inFlight.values.sumOf { it.get() }
-                    )
                     active++
                     launch {
                         val outcome = try {
@@ -207,6 +205,12 @@ class DownloadEngine(
                                 completed = completed,
                                 total = total,
                                 coordinator = coordinator,
+                                perKeyLimit = concurrency,
+                                requestsInFlight = requestsInFlight,
+                                onRequestStarted = { concurrent ->
+                                    SessionTelemetry.onPeakConcurrency(intentId, concurrent)
+                                    SessionTelemetry.onFirstRequest(intentId, clock() - sessionStartedAt)
+                                },
                                 onProgress = onProgress,
                                 onChunkDone = onChunkDone
                             )
@@ -311,6 +315,8 @@ class DownloadEngine(
                 }
             }
         }
+
+        SessionTelemetry.onTransferFinished(intentId, clock() - sessionStartedAt)
 
         if (failedOnce) {
             if (firstFailure?.failureCause == FailureCause.SERVER_RANGE_UNSUPPORTED) {
@@ -543,6 +549,9 @@ class DownloadEngine(
         completed: AtomicLong,
         total: Long,
         coordinator: CommitCoordinator,
+        perKeyLimit: Int,
+        requestsInFlight: AtomicInteger,
+        onRequestStarted: (Int) -> Unit,
         onProgress: (DownloadProgress) -> Unit,
         onChunkDone: (ChunkRange) -> Unit
     ) {
@@ -550,19 +559,27 @@ class DownloadEngine(
         val startedAt = clock()
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
-        val payload = TransferLimiter.withPermit(route.url, route.linkId, route.connectionLimit) {
-            val lastEmitAt = java.util.concurrent.atomic.AtomicLong(0)
-            readRangeWithWatchdog(
-                intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total,
-                onBytesProgress = { bytes ->
-                    // 块内字节进度上报：进度条不再只在块完成时跳一次，慢块期间也能看到推进。
-                    val now = clock()
-                    if (now - lastEmitAt.get() >= PROGRESS_EMIT_MS) {
-                        lastEmitAt.set(now)
-                        onProgress(DownloadProgress(completed.get() + bytes, total))
+        // per-key 闸门取会话预算，与全局闸门同源：
+        // 两套独立上限（源健康快照 vs 拓扑预算）取 min 会让预算形同虚设。
+        val payload = TransferLimiter.withPermit(route.url, route.linkId, perKeyLimit) {
+            onRequestStarted(requestsInFlight.incrementAndGet())
+            try {
+                val lastEmitAt = java.util.concurrent.atomic.AtomicLong(0)
+                readRangeWithWatchdog(
+                    // 裂解与 stall 放宽看的是「该源能并行几条」（源维度信号），不是并发闸门。
+                    intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total,
+                    onBytesProgress = { bytes ->
+                        // 块内字节进度上报：进度条不再只在块完成时跳一次，慢块期间也能看到推进。
+                        val now = clock()
+                        if (now - lastEmitAt.get() >= PROGRESS_EMIT_MS) {
+                            lastEmitAt.set(now)
+                            onProgress(DownloadProgress(completed.get() + bytes, total))
+                        }
                     }
-                }
-            )
+                )
+            } finally {
+                requestsInFlight.decrementAndGet()
+            }
         }
 
         val validation = RangeValidator.validate(

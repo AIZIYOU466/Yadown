@@ -69,13 +69,7 @@ interface RangeSource {
     ): SequentialResult = throw UnsupportedOperationException("该源不支持顺序读取")
 
     /**
-     * 预热连接：正式下载前并发建立最多 [connections] 条连接，减少首批块请求的握手等待。
-     * 默认不做任何事；预热失败必须静默，不能阻断下载。
-     */
-    suspend fun warmup(url: String, totalSize: Long?, connections: Int) {}
-
-    /**
-     * 丢弃当前源持有的空闲连接，让后续预热/下载重新建连。
+     * 丢弃当前源持有的空闲连接，让后续下载重新建连。
      * 用于避免跨任务复用已劣化（被 CDN 长连接限速/半死）的连接。
      */
     fun resetConnections() {}

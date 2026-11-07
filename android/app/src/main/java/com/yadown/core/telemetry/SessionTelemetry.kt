@@ -25,8 +25,14 @@ object SessionTelemetry {
         var peakConcurrentRequests: Int = 0,
         var connectStarts: Long = 0,
         var connectBaseline: Long = 0,
+        var callStarts: Long = 0,
+        var callBaseline: Long = 0,
         /** 首块完成距会话开始的毫秒数（起步延迟）。 */
         var firstChunkAtMs: Long? = null,
+        /** 首个分块请求真正发出（取得传输许可）距会话开始的毫秒数：不含调度与预热。 */
+        var firstRequestAtMs: Long? = null,
+        /** 最后一个分块完成距会话开始的毫秒数，与 [firstRequestAtMs] 构成传输窗口。 */
+        var transferFinishedAtMs: Long? = null,
         /** 结束前 flush + 最终提交（fsync）耗时。 */
         var flushMs: Long? = null,
         /** 完成校验耗时。 */
@@ -38,6 +44,21 @@ object SessionTelemetry {
 
         val avgBytesPerSec: Double
             get() = bytesDone * 1000.0 / elapsedMs
+
+        /** 传输窗口内的吞吐：排除起步与结束提交开销，用于跨连接档位比较。 */
+        val steadyStateBytesPerSec: Double
+            get() {
+                val start = firstRequestAtMs ?: return avgBytesPerSec
+                val end = transferFinishedAtMs ?: return avgBytesPerSec
+                val window = (end - start).coerceAtLeast(1)
+                return bytesDone * 1000.0 / window
+            }
+
+        /** 本会话数据请求的复用率（不含会话前的探测与建任务开销）。 */
+        val reuseRate: Double
+            get() = if (callStarts == 0L) 0.0 else {
+                (callStarts - connectStarts).coerceAtLeast(0L).toDouble() / callStarts
+            }
     }
 
     private val lock = Any()
@@ -53,7 +74,8 @@ object SessionTelemetry {
                 startedAt = System.currentTimeMillis(),
                 topology = topology,
                 connectionBudget = connectionBudget,
-                connectBaseline = ConnectionMetrics.snapshot().connectStarts
+                connectBaseline = ConnectionMetrics.snapshot().connectStarts,
+                callBaseline = ConnectionMetrics.snapshot().callStarts
             )
         }
     }
@@ -109,6 +131,22 @@ object SessionTelemetry {
         }
     }
 
+    fun onFirstRequest(intentId: String, elapsedMs: Long) {
+        synchronized(lock) {
+            sessions[intentId]?.let { session ->
+                if (session.firstRequestAtMs == null) {
+                    session.firstRequestAtMs = elapsedMs.coerceAtLeast(0)
+                }
+            }
+        }
+    }
+
+    fun onTransferFinished(intentId: String, elapsedMs: Long) {
+        synchronized(lock) {
+            sessions[intentId]?.let { it.transferFinishedAtMs = elapsedMs.coerceAtLeast(0) }
+        }
+    }
+
     fun onFlush(intentId: String, elapsedMs: Long) {
         synchronized(lock) {
             sessions[intentId]?.let { it.flushMs = elapsedMs.coerceAtLeast(0) }
@@ -127,6 +165,9 @@ object SessionTelemetry {
             session.finishedAt = System.currentTimeMillis()
             session.connectStarts = (
                 ConnectionMetrics.snapshot().connectStarts - session.connectBaseline
+                ).coerceAtLeast(0)
+            session.callStarts = (
+                ConnectionMetrics.snapshot().callStarts - session.callBaseline
                 ).coerceAtLeast(0)
             lastFinished = session
             return session

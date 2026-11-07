@@ -6,14 +6,13 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import com.yadown.core.transfer.DownloadException
 import com.yadown.core.transfer.FailureCause
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -242,29 +241,6 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         return match.groupValues[3].toLongOrNull()
     }
 
-    override suspend fun warmup(url: String, totalSize: Long?, connections: Int) {
-        if (connections <= 1) return
-        coroutineScope {
-            repeat(connections) {
-                launch(Dispatchers.IO) {
-                    runCatching {
-                        val request = Request.Builder()
-                            .url(url)
-                            .header("Range", "bytes=0-0")
-                            .header("Accept-Encoding", "identity")
-                            .build()
-                        client.newCall(request).executeSuspend().use { response ->
-                            // 读完 1 字节，让连接归还连接池；预热失败不影响下载。
-                            if (response.code == 200 || response.code == 206) {
-                                response.body?.bytes()
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     override fun resetConnections() {
         client.connectionPool.evictAll()
     }
@@ -283,6 +259,10 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
          * 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。
          * Dispatcher 显式放宽：OkHttp 默认每主机 5 是隐藏上限，会卡住高并发下载。
          *
+         * 连接池容量必须对齐并发上限：OkHttp 默认只保留 5 条空闲连接，MULTI_CONNECTION 下
+         * 并发分块建出的 TCP 会被裁掉，下一批分块重新握手（实测 16 并发 23 个分块中有 11 个重连）。
+         * 取并发模型硬上限 [TopologyConcurrency.MAX_MULTI_LIMIT]，空闲连接仍由 keep-alive 到期回收。
+         *
          * [http1Only] 用于拓扑 A/B：HTTP/1.1 不允许复用同一连接并发请求，
          * 每个在途分块会各占一条 TCP；默认保持 ALPN 协商（HTTPS 下通常是 HTTP/2 单连接）。
          */
@@ -294,10 +274,19 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
                         maxRequestsPerHost = 32
                     }
                 )
+                .connectionPool(
+                    ConnectionPool(
+                        TopologyConcurrency.MAX_MULTI_LIMIT,
+                        KEEP_ALIVE_MINUTES,
+                        TimeUnit.MINUTES
+                    )
+                )
                 .eventListener(ConnectionMetrics.listener)
                 .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
                 .apply { if (http1Only) protocols(listOf(Protocol.HTTP_1_1)) }
                 .build()
+
+        private const val KEEP_ALIVE_MINUTES = 5L
     }
 }
 

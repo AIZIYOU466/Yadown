@@ -339,9 +339,9 @@ interface SourceRouter {
 
 - `source_key` = 域名 + 路径前两级，不含 query（避免签名参数把同一源拆成无数 key）。
 - 吞吐/延迟/失败率均为 EWMA（α=0.3，24h TTL）；只有可归因于源的失败写入健康度，存储、内容漂移、预算类失败不污染源评分。
-- 连接上限从 2 起步，失败率 ≤0.05 时逐次 +1、上限 4（与每主机闸门一致）；失败率 >0.2 立即减半，下限 1。
+- 连接上限从 8 起步，失败率 ≤0.2 时逐次 +1、上限 16；连续 3 次可归因失败或失败率 >0.5 减半，下限 2。
 - 评分 = 0.55×可靠性 + 0.30×吞吐归一化 + 0.15×本地性 − 0.10×成本；无样本源用中性先验（0.8/0.5）。
-- 逐块选源：`slot = chunkIndex + sourceSlot` 轮转，失败后 `sourceSlot+1` 换源；每源在途数受学习到的连接上限约束，全局仍受 DispatcherPolicy 与 TransferLimiter 约束。
+- 逐块选源：`slot = chunkIndex + sourceSlot` 轮转，失败后 `sourceSlot+1` 换源；每源在途数只用于轮转分摊（`SourceSelection.pick`），真正的并发闸门是会话预算（全局与 per-key 同源，见下文限额）。
 - **镜像准入**：必须与主源大小、Range 能力一致，且 ETag 或 Last-Modified 至少一项相同。分块校验和只能证明块没写坏，不能证明各源给的是同一份字节；身份不可证明的镜像一律拒绝。
 
 **peer 信任模型（定案，T4.3 实施前生效）**：
@@ -445,7 +445,7 @@ fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
 - 事件驱动裂解：1s 窗口跨活动块中位数，连续 2 个窗口低于相对阈值后由 `ChunkSplitPolicy` 准入：全局中位数 <64KB/s 不裂解、已传 ≥25% 不取消、per-key=1 不裂解；子块插到队列最前，允许并发临时 +20%，块完成后回落。
 - 自适应粒度：<256KB/s 最小 512KB，中速 1MB，高速 2MB；尾部 64–128KB 允许 64KB 微拆。慢裂解不消耗失败预算，达最小粒度后换源重试并计预算，防止无限拆分。
 - 原子性：`replaceWithChildren` 单事务完成父段失效与子段插入；慢裂解期间父段为 INVALIDATED，不参与完成校验。
-- 限额：全局配额动态（单链路 16、双链路 24），per-key 由 `source_health` 学习值传入（默认 8、上限 16、下限 2，失败迟滞）；OkHttp `Dispatcher` 显式设为 64/32，消除默认每主机 5 的隐藏上限。
+- 限额：全局配额动态（单链路 16、双链路 24），per-key 与会话预算同源传入；OkHttp `Dispatcher` 显式设为 64/32，消除默认每主机 5 的隐藏上限。
 - 健康度：连接上限默认 8、上限 16、下限 2；单次失败不降并发，连续 3 次或 10s 窗口失败率 >50% 才减半；成功后失败率快速衰减（×0.5）并逐次扩容。401/403 归因 `LINK_EXPIRED`，不写入源健康度且不重试膨胀。健康键对 GitHub release assets 纳入第三段文件 UUID，避免同 repo 不同文件共享一次坏链接的惩罚。
 - 熔断：10s 窗口失败率 >50% 或连续 3 次失败即熔断；429 按 `Retry-After` 冷却且不裂解；DNS 失败 5s 冷却；冷却后允许半开探测，成功清零。
 - 观测：`TransferTelemetry` 进程累计 + `SessionTelemetry` 按 intent 的会话统计（完成/失败/字节/重试/stall/慢裂解/耗时/平均速度/峰值并发/本任务新建连接）；debug 构建顶栏「诊断」分栏展示。真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
@@ -460,8 +460,14 @@ fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
 - host 连接数学习：`HostTuningStore`（SharedPreferences JSON，不动 Room schema）按 host 记录 `(limit → EWMA 吞吐, 样本数)`；`HostTuningPolicy.choose` 先把每个候选（8/12/16）探索到 2 个样本，再选 EWMA 最高档；任务结束仅在「无失败、有实际字节」时 `record`，避免把网络故障当档位差异。`DownloadRepository` 在 AUTO+MULTI 时优先用学到的 limit，诊断页展示每 host 学习快照。意义：GitHub 甜点 8、Azure 16，单一全局值只是折中，按 host 学习可自动适配不同 CDN。
 - 多连接数：`TransportTopologySettings.multiConnectionLimit`（4/6/8/12/16，默认 **8**）与 `TopologyConcurrency.concurrencyFor(linkCount, topology, limit)` 统一计算单/双链路并发预算；MULTI 下即 TCP 连接数上限，REUSE/AUTO 小文件固定 16，双链路 24。诊断页显示「并发预算」。容器内 `MultiConnectionThroughputTest` 用每连接限速 server 验证 4 连接与 2 连接的聚合吞吐比例。真机 GitHub A/B（2026-11-07）：预算 8 中位 8s/2.69MB/s（只开 3 条 TCP，复用 67–72%）、预算 12 中位 18.5s/1.28MB/s、预算 16 中位 16s/1.37MB/s；8 为当前 GitHub CDN 甜点，16 额外连接主要付握手与公平限速代价。Azure Blob 当时 16 最优，两 CDN 甜点不同，后续按 host 学习。
 - 拓扑 A/B 落地（2026-11-07，真机数据待回填）：`TransportTopologySettings` + `TopologyRangeSource` 提供两种模式——`REUSE`（默认，保留 H2 单连接复用，行为不变）与 `MULTI_CONNECTION`（强制 HTTP/1.1，并发分块各占一条 TCP）；入口在「多链路加速」对话框，切换后下一个分块生效，多连接客户端延迟创建、未启用时不多出连接池。该开关只作用于单链路默认源；多链路每条链路本就有独立客户端与连接池，不受影响。`SessionTelemetry` 记录会话开始时的拓扑与并发预算，诊断页与 `connectStarts`/峰值并发/平均速度同屏展示。默认值已翻转为 `AUTO`（≥8MB 多连接），翻转依据见上条 8 次 A/B。
+- 连接池容量与并发预算对齐（2026-11-08，真机 23.5MB / 23 分块 / 预算 16）：真机诊断显示 `新建连接 27`、`复用率 30%`、`首块 2062ms`。帐目对得上：`call 40 = 1 探测 + 16 预热 + 23 分块`，`connect 28 = 1 + 16 + 11`，即 48% 的分块请求重新握手。根因是 `OkHttpClient` 未设 `connectionPool`，OkHttp 4.12 默认只保留 5 条空闲连接（无参 `ConnectionPool()` = 5/5min，字节码核实），预热出的 16 条被裁到 5 条，剩下的分块只能重连；同一机制容器内可复现（默认池：第二波新建 11 条 TCP，累计 27；池容量 16：第二波 0 条重连，16 个请求 292ms → 84ms）。修复：`createClient` 显式设 `ConnectionPool(MAX_MULTI_LIMIT=32, 5min)`；`ConnectionPoolSizingTest` 锁定「两波请求零重连」。
+- 预热移除（2026-11-08，取代 2026-11-07 的预热条目）：MULTI_CONNECTION 下第一波分块请求本身就会建立所需 TCP，预热在池容量修正后收益为 0、修正前为负（16 次握手只剩 5 条），且它 `await` 在首块之前，是首块 2062ms 的主要组成部分。因此删除 `RangeSource.warmup` 契约与全部实现、`DownloadRepository` 的预热调用与 `WarmupTest`。
+- 并发闸门单一权威（2026-11-08）：per-key 闸门改为与会话预算同值（`TransferLimiter.withPermit(perKeyLimit = concurrency)`），不再取 `source_health` 的连接上限——两套上限取 min 会让「预算 16」实际只跑 8，并让连接档位 A/B 测到的始终是更小的那个值。源健康度的连接上限继续只用于 `SourceSelection.pick` 的轮转分摊与熔断，裂解/stall 放宽仍读该值。
+- 会话预算口径（2026-11-08）：`SessionTelemetry.begin` 移到路由计算之后，用真实 `linkCount` 计算预算（旧实现硬编码 `linkCount=1`，双链路会显示 16 而实际跑 24）。
+- 观测口径（2026-11-08）：峰值并发改为在取得传输许可后计数（排队等许可的块不再算在飞）；新增 `firstRequestAtMs`/`transferFinishedAtMs` 与 `steadyStateBytesPerSec`（传输窗口内吞吐，排除起步与结束提交）；复用率改为会话基线差（不再把探测与预热计入分母），诊断页分列「本次复用率」与「进程累计」；`DynamicLimiter.Snapshot` 新增 `perKeyLimit`，诊断页显示每 key 生效上限；每 host 学习展示全部档位样本（`8→2.63(n=1) · 12→…`，`*` 标最优），避免只看最优档无法判断收敛。
+- host 连接数学习的奖励口径（2026-11-08）：`record` 从「会话平均吞吐」改为「稳态吞吐」，否则预热与提交开销按档位自身放大，高档位永远为自己扣分；样本仍只在无失败、有实际字节时写入。
+- 诊断页与顶栏（2026-11-08）：「进程累计（含历史）」改为「进程累计（本进程）」（`TransferTelemetry` 纯内存，不聚合历史）；顶栏标题单行不换行，debug 入口 P0/诊断 收进溢出菜单（5 个 TextButton 曾把标题挤成两行）。
 - 已知限制：整块读入内存后落盘；慢裂解仍会丢弃已传字节，但已限制为块内 <25% 且低速/单连接不裂解；零丢弃需要流式读取+部分提交（后续）。
-
 **I/O 非阻塞化（P3，2026-11）**：
 
 - 传输协程只提交写任务（有界队列 16 块，背压），不执行磁盘系统调用；单写线程用 `FileChannel.write(buffer, position)` 定位写，支持乱序块。
