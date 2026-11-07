@@ -52,6 +52,7 @@ import com.yadown.core.transfer.IntentState
 import com.yadown.feature.p0.P0ProbeScreen
 import com.yadown.feature.peer.PeerListDialog
 import com.yadown.feature.link.LinkAggregationDialog
+import com.yadown.feature.diagnostics.DiagnosticsDialog
 import com.yadown.feature.player.PlayerActivity
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,6 +63,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
     var showP0 by remember { mutableStateOf(false) }
     var showPeers by remember { mutableStateOf(false) }
     var showLinks by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
     var showBackgroundGuide by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<TaskUi?>(null) }
@@ -81,6 +83,7 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
                     TextButton(onClick = { showLinks = true }) { Text("多链路") }
                     if (BuildConfig.DEBUG) {
                         TextButton(onClick = { showP0 = true }) { Text("P0") }
+                        TextButton(onClick = { showDiagnostics = true }) { Text("诊断") }
                     }
                 }
             )
@@ -132,6 +135,10 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
 
     if (showLinks) {
         LinkAggregationDialog(onDismiss = { showLinks = false })
+    }
+
+    if (showDiagnostics) {
+        DiagnosticsDialog(onDismiss = { showDiagnostics = false })
     }
 
     if (showAddDialog) {

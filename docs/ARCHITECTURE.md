@@ -445,9 +445,9 @@ fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
 - 事件驱动裂解：1s 窗口跨活动块中位数，连续 2 个窗口低于 `max(中位数×0.5, 64KB/s)` 即取消当前请求；子块插到队列最前，允许并发临时 +20%（上限 `concurrency/5`），块完成后回落。
 - 自适应粒度：<256KB/s 最小 512KB，中速 1MB，高速 2MB；尾部 64–128KB 允许 64KB 微拆。慢裂解不消耗失败预算，达最小粒度后换源重试并计预算，防止无限拆分。
 - 原子性：`replaceWithChildren` 单事务完成父段失效与子段插入；慢裂解期间父段为 INVALIDATED，不参与完成校验。
-- 限额：全局配额动态（单链路 6、双链路 12），per-key 由 `source_health` 学习值传入；`DynamicLimiter` 等待者排队并在释放/扩容时唤醒。
+- 限额：全局配额动态（单链路 8、双链路 12），per-key 由 `source_health` 学习值传入（默认 4、上限 6、失败减半）；`DynamicLimiter` 等待者排队并在释放/扩容时唤醒。
 - 熔断：10s 窗口失败率 >50% 或连续 3 次失败即熔断；429 按 `Retry-After` 冷却且不裂解；DNS 失败 5s 冷却；冷却后允许半开探测，成功清零。
-- 观测：`TransferTelemetry.stallRate`、`slowSplits`，`ConnectionMetrics.reuseRate`；真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
+- 观测：`TransferTelemetry.stallRate`、`slowSplits`，`ConnectionMetrics.reuseRate`；debug 构建顶栏「诊断」展示调度/连接/配额实时快照。真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
 - 已知限制：整块读入内存后落盘，慢裂解会丢弃已传字节（≤1MB）；零丢弃需要流式读取+定位写（P3）。
 
 **I/O 非阻塞化（P3，2026-11）**：

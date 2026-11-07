@@ -22,8 +22,18 @@ class SourceHealthModelTest {
         assertEquals(1_000.0, health.throughput, 1e-9)
         assertEquals(0.0, health.failureRate, 1e-9)
         assertEquals(100.0, health.latencyMs, 1e-9)
-        assertEquals(3, health.connectionLimit)
+        assertEquals(5, health.connectionLimit)
         assertEquals(now + 60_000, health.expiresAt)
+    }
+
+    @Test
+    fun connectionLimitExpandsUpToSix() {
+        var health: SourceHealth? = null
+        repeat(6) {
+            health = success(prev = health)
+        }
+
+        assertEquals(6, health!!.connectionLimit)
     }
 
     @Test
@@ -38,12 +48,12 @@ class SourceHealthModelTest {
     @Test
     fun sourceFailureRollsBackLimitImmediately() {
         val healthy = success(prev = null)
-        assertEquals(3, healthy.connectionLimit)
+        assertEquals(5, healthy.connectionLimit)
 
         val failed = model.onFailure("cdn.example.com/a/b", healthy, FailureCause.NETWORK_TIMEOUT)
 
         assertEquals(0.3, failed!!.failureRate, 1e-9)
-        assertEquals(1, failed.connectionLimit)
+        assertEquals(2, failed.connectionLimit)
     }
 
     @Test
@@ -74,7 +84,7 @@ class SourceHealthModelTest {
         val recovered = success(prev = failed)
 
         assertEquals(0.21, recovered.failureRate, 1e-9)
-        assertEquals(1, recovered.connectionLimit)
+        assertEquals(2, recovered.connectionLimit)
     }
 
     @Test

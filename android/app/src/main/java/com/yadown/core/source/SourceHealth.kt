@@ -16,9 +16,8 @@ data class SourceHealth(
 /**
  * 源健康度的纯逻辑部分：EWMA 吞吐/延迟/失败率与连接上限学习。
  *
- * 连接上限从 2 起步，只有在失败率足够低时才扩容，避免弱网下把并发拉高成重试风暴；
- * 一旦出现可归因于源的失败立刻减半回滚。上限 4 与 TransferLimiter 的每主机闸门一致，
- * 学出更大的值没有意义。
+ * 连接上限从 4 起步，只有在失败率足够低时才扩容（上限 6），
+ * 一旦出现可归因于源的失败立刻减半回滚。
  */
 class SourceHealthModel(
     private val clock: () -> Long = System::currentTimeMillis,
@@ -105,9 +104,9 @@ class SourceHealthModel(
     companion object {
         const val DEFAULT_TTL_MS = 24L * 60 * 60 * 1000
         const val DEFAULT_ALPHA = 0.3
-        const val INITIAL_CONNECTION_LIMIT = 2
+        const val INITIAL_CONNECTION_LIMIT = 4
         const val MIN_CONNECTION_LIMIT = 1
-        const val MAX_CONNECTION_LIMIT = 4
+        const val MAX_CONNECTION_LIMIT = 6
         const val EXPAND_FAILURE_RATE = 0.05
         const val ROLLBACK_FAILURE_RATE = 0.2
         const val UNUSABLE_FAILURE_RATE = 0.8

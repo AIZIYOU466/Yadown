@@ -253,8 +253,8 @@ class DownloadRepository @Inject constructor(
             val descriptor = descriptors[intentId] ?: loadDescriptor(intentId)
             val routes = routesFor(intentId, url)
             val linkCount = routes.mapNotNull { it.linkId }.distinct().size
-            // 单链路健康时 6 连接，双链路 12；由 TransferLimiter 作为进程级上限。
-            val concurrency = if (linkCount >= 2) 12 else 6
+            // 单链路 8 连接，双链路 12；由 TransferLimiter 作为进程级上限。
+            val concurrency = if (linkCount >= 2) 12 else 8
             TransferLimiter.updateGlobalLimit(concurrency)
             engine.download(
                 intentId = intentId,

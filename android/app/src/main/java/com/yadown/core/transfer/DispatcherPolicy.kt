@@ -11,8 +11,8 @@ object DispatcherPolicy {
     fun maxRequests(health: Float, storageIops: Int, linkCount: Int = 1): Int {
         val links = linkCount.coerceIn(1, 2)
         val networkLimit = when {
-            health > 0.7f -> 6 * links
-            health > 0.3f -> 3 * links
+            health > 0.7f -> 8 * links
+            health > 0.3f -> 4 * links
             health > 0.1f -> 1 * links
             else -> 0
         }

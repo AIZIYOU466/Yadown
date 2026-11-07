@@ -7,12 +7,12 @@ class DispatcherPolicyTest {
 
     @Test
     fun highHealthHighIops_usesNetworkLimit() {
-        assertEquals(6, DispatcherPolicy.maxRequests(1.0f, 6000))
+        assertEquals(8, DispatcherPolicy.maxRequests(1.0f, 6000))
     }
 
     @Test
-    fun midHealth_usesThree() {
-        assertEquals(3, DispatcherPolicy.maxRequests(0.5f, 6000))
+    fun midHealth_usesFour() {
+        assertEquals(4, DispatcherPolicy.maxRequests(0.5f, 6000))
     }
 
     @Test
@@ -26,8 +26,8 @@ class DispatcherPolicyTest {
     }
 
     @Test
-    fun healthBoundary_070_fallsToThree() {
-        assertEquals(3, DispatcherPolicy.maxRequests(0.7f, 6000))
+    fun healthBoundary_070_fallsToFour() {
+        assertEquals(4, DispatcherPolicy.maxRequests(0.7f, 6000))
     }
 
     @Test
@@ -42,20 +42,20 @@ class DispatcherPolicyTest {
 
     @Test
     fun storageLimitCapsNetwork() {
-        assertEquals(6, DispatcherPolicy.maxRequests(1.0f, 3000))
+        assertEquals(8, DispatcherPolicy.maxRequests(1.0f, 3000))
         assertEquals(2, DispatcherPolicy.maxRequests(1.0f, 1000))
     }
 
     @Test
     fun storageBoundaries() {
-        assertEquals(6, DispatcherPolicy.maxRequests(1.0f, 5000))
+        assertEquals(8, DispatcherPolicy.maxRequests(1.0f, 5000))
         assertEquals(2, DispatcherPolicy.maxRequests(1.0f, 2000))
     }
 
     @Test
-    fun dualLinkDoublesNetworkLimit() {
+    fun dualLinkRaisesNetworkLimit() {
         assertEquals(12, DispatcherPolicy.maxRequests(1.0f, 6000, linkCount = 2))
-        assertEquals(6, DispatcherPolicy.maxRequests(0.5f, 6000, linkCount = 2))
+        assertEquals(8, DispatcherPolicy.maxRequests(0.5f, 6000, linkCount = 2))
     }
 
     @Test
