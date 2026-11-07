@@ -6,6 +6,7 @@ import com.yadown.core.net.LinkAggregationSettings
 import com.yadown.core.net.LinkAggregator
 import com.yadown.core.net.LinkHealthStore
 import com.yadown.core.net.LinkRegistry
+import com.yadown.core.net.TransportTopologySettings
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,6 +24,12 @@ object LinkModule {
     fun provideLinkAggregationSettings(
         @ApplicationContext context: Context
     ): LinkAggregationSettings = LinkAggregationSettings(context)
+
+    @Provides
+    @Singleton
+    fun provideTransportTopologySettings(
+        @ApplicationContext context: Context
+    ): TransportTopologySettings = TransportTopologySettings(context)
 
     @Provides
     @Singleton

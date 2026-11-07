@@ -40,6 +40,12 @@ class SessionTelemetryTest {
     }
 
     @Test
+    fun recordsTopologyOfSession() {
+        SessionTelemetry.begin("t1", "MULTI_CONNECTION")
+        assertEquals("MULTI_CONNECTION", SessionTelemetry.current("t1")!!.topology)
+    }
+
+    @Test
     fun eventsForUnknownSessionAreIgnored() {
         SessionTelemetry.onChunkDone("missing", 10)
         assertNull(SessionTelemetry.current("missing"))

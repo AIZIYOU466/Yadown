@@ -13,6 +13,7 @@ import com.yadown.core.transfer.FailureCause
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 
@@ -67,7 +68,7 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         endInclusive: Long,
         onProgress: (Long) -> Unit,
         linkId: String?
-    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress, null)
+    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress, linkId)
 
     override suspend fun readRangeChecked(
         url: String,
@@ -249,9 +250,14 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         private const val MAX_BUFFER = 4L * 1024 * 1024
         private val CONTENT_RANGE = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""")
 
-        /** 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。
-         *  Dispatcher 显式放宽：OkHttp 默认每主机 5 是隐藏上限，会卡住高并发下载。 */
-        fun createClient(readTimeoutMs: Long = 20_000): OkHttpClient =
+        /**
+         * 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。
+         * Dispatcher 显式放宽：OkHttp 默认每主机 5 是隐藏上限，会卡住高并发下载。
+         *
+         * [http1Only] 用于拓扑 A/B：HTTP/1.1 不允许复用同一连接并发请求，
+         * 每个在途分块会各占一条 TCP；默认保持 ALPN 协商（HTTPS 下通常是 HTTP/2 单连接）。
+         */
+        fun createClient(readTimeoutMs: Long = 20_000, http1Only: Boolean = false): OkHttpClient =
             OkHttpClient.Builder()
                 .dispatcher(
                     okhttp3.Dispatcher().apply {
@@ -261,6 +267,7 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
                 )
                 .eventListener(ConnectionMetrics.listener)
                 .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
+                .apply { if (http1Only) protocols(listOf(Protocol.HTTP_1_1)) }
                 .build()
     }
 }

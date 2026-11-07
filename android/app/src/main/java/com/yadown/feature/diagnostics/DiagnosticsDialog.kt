@@ -59,6 +59,10 @@ fun DiagnosticsDialog(
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
+                        "传输拓扑 ${session.topology.ifEmpty { "未标注" }}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
                         if (session.finishedAt == null) "进行中" else "已结束",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.semanticColors.subtleText

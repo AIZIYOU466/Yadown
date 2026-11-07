@@ -7,6 +7,8 @@ import com.yadown.core.net.LinkRegistry
 import com.yadown.core.net.MultiLinkRangeSource
 import com.yadown.core.net.OkHttpRangeSource
 import com.yadown.core.net.RangeSource
+import com.yadown.core.net.TopologyRangeSource
+import com.yadown.core.net.TransportTopologySettings
 import com.yadown.core.peer.PeerClientRegistry
 import com.yadown.core.peer.PeerRangeSource
 import com.yadown.core.semantic.FormatResolverRegistry
@@ -41,9 +43,20 @@ object TransferModule {
     fun provideRangeSource(
         client: OkHttpClient,
         peers: PeerClientRegistry,
-        links: LinkRegistry
+        links: LinkRegistry,
+        topology: TransportTopologySettings
     ): RangeSource = MultiLinkRangeSource(
-        delegate = PeerRangeSource(OkHttpRangeSource(client), peers),
+        // 拓扑开关只作用于单链路默认源：多链路每条链路本就有独立客户端与连接池。
+        delegate = TopologyRangeSource(
+            reuse = PeerRangeSource(OkHttpRangeSource(client), peers),
+            multiConnection = {
+                PeerRangeSource(
+                    OkHttpRangeSource(OkHttpRangeSource.createClient(http1Only = true)),
+                    peers
+                )
+            },
+            topology = { topology.topology }
+        ),
         linkSources = { linkId -> links.sourceFor(linkId) },
         health = links.health
     )

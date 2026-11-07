@@ -92,6 +92,27 @@ fun LinkAggregationDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.semanticColors.subtleText
                 )
+
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("分块多连接（A/B）", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "关闭（默认）走 HTTP/2 单连接复用；开启强制 HTTP/1.1，" +
+                                "每个并发分块各建一条 TCP。仅影响单链路，切换后下一个分块生效。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.semanticColors.subtleText
+                        )
+                    }
+                    Switch(
+                        checked = state.multiConnection,
+                        onCheckedChange = viewModel::setMultiConnection
+                    )
+                }
             }
         },
         confirmButton = {

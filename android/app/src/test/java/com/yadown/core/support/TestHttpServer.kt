@@ -6,12 +6,15 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 data class HttpRequest(
     val method: String,
     val path: String,
-    val headers: Map<String, String>
+    val headers: Map<String, String>,
+    /** 服务端接受连接时分配的序号，用于断言并发请求是否落在不同 TCP 上。 */
+    val connectionId: Int = -1
 )
 
 data class HttpResponse(
@@ -23,14 +26,21 @@ data class HttpResponse(
 /**
  * 纯 ServerSocket 的测试 HTTP server。
  * 不使用 com.sun.net.httpserver：AGP 单测编译类路径不包含 jdk.httpserver。
+ *
+ * [keepAlive] 为 false（默认）时每个响应后关闭连接，与历史行为一致；
+ * 为 true 时在一条连接上循环处理请求，用于验证连接复用/多条 TCP 的行为。
  */
 class TestHttpServer(
+    private val keepAlive: Boolean = false,
     private val handler: (HttpRequest) -> HttpResponse
 ) : Closeable {
 
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     private val acceptThread = thread(start = true, isDaemon = true) { acceptLoop() }
     private val recorded = Collections.synchronizedList(mutableListOf<HttpRequest>())
+    private val accepted = Collections.synchronizedList(mutableListOf<Socket>())
+    private val connectionIds = Collections.synchronizedSet(mutableSetOf<Int>())
+    private val nextConnectionId = AtomicInteger()
 
     val baseUrl: String
         get() = "http://127.0.0.1:${socket.localPort}/file"
@@ -41,60 +51,71 @@ class TestHttpServer(
     val requests: List<HttpRequest>
         get() = synchronized(recorded) { recorded.toList() }
 
+    /** 已接受的 TCP 连接数（不是请求数）。 */
+    val connectionCount: Int
+        get() = connectionIds.size
+
     override fun close() {
         runCatching { socket.close() }
+        synchronized(accepted) {
+            accepted.forEach { runCatching { it.close() } }
+            accepted.clear()
+        }
         acceptThread.join(500)
     }
 
     private fun acceptLoop() {
         while (!socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
-            thread(start = true, isDaemon = true) { handle(client) }
+            val connectionId = nextConnectionId.incrementAndGet()
+            connectionIds += connectionId
+            accepted += client
+            thread(start = true, isDaemon = true) { handle(client, connectionId) }
         }
     }
 
-    private fun handle(client: Socket) {
+    private fun handle(client: Socket, connectionId: Int) {
         try {
             client.use { connection ->
                 val input = connection.getInputStream().bufferedReader(Charsets.ISO_8859_1)
-                val requestLine = input.readLine() ?: return
-                val parts = requestLine.split(' ')
-                val method = parts.getOrNull(0) ?: return
-                val path = parts.getOrNull(1) ?: "/"
-
-                val headers = mutableMapOf<String, String>()
+                val output = connection.getOutputStream()
                 while (true) {
-                    val line = input.readLine() ?: break
-                    if (line.isEmpty()) break
-                    val separator = line.indexOf(':')
-                    if (separator > 0) {
-                        headers[line.substring(0, separator).trim().lowercase()] =
-                            line.substring(separator + 1).trim()
-                    }
-                }
+                    val requestLine = input.readLine() ?: return
+                    val parts = requestLine.split(' ')
+                    val method = parts.getOrNull(0) ?: return
+                    val path = parts.getOrNull(1) ?: "/"
 
-                val request = HttpRequest(method, path, headers)
-                recorded += request
-                val response = handler(request)
-                val reason = when (response.code) {
-                    200 -> "OK"
-                    206 -> "Partial Content"
-                    416 -> "Range Not Satisfiable"
-                    429 -> "Too Many Requests"
-                    else -> "Error"
-                }
-                val head = buildString {
-                    append("HTTP/1.1 ${response.code} $reason\r\n")
-                    response.headers.forEach { (key, value) ->
-                        append("$key: $value\r\n")
+                    val headers = mutableMapOf<String, String>()
+                    while (true) {
+                        val line = input.readLine() ?: return
+                        if (line.isEmpty()) break
+                        val separator = line.indexOf(':')
+                        if (separator > 0) {
+                            headers[line.substring(0, separator).trim().lowercase()] =
+                                line.substring(separator + 1).trim()
+                        }
                     }
-                    append("Content-Length: ${response.body.size}\r\n")
-                    append("Connection: close\r\n\r\n")
-                }
-                connection.getOutputStream().use { output ->
+
+                    val request = HttpRequest(method, path, headers, connectionId)
+                    recorded += request
+                    val response = handler(request)
+                    val reason = when (response.code) {
+                        200 -> "OK"
+                        206 -> "Partial Content"
+                        416 -> "Range Not Satisfiable"
+                        429 -> "Too Many Requests"
+                        else -> "Error"
+                    }
+                    val head = buildString {
+                        append("HTTP/1.1 ${response.code} $reason\r\n")
+                        response.headers.forEach { (key, value) -> append("$key: $value\r\n") }
+                        append("Content-Length: ${response.body.size}\r\n")
+                        append(if (keepAlive) "Connection: keep-alive\r\n\r\n" else "Connection: close\r\n\r\n")
+                    }
                     output.write(head.toByteArray(Charsets.ISO_8859_1))
                     output.write(response.body)
                     output.flush()
+                    if (!keepAlive) return
                 }
             }
         } catch (_: IOException) {

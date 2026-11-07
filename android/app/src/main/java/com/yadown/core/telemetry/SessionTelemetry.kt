@@ -12,6 +12,8 @@ object SessionTelemetry {
     data class Session(
         val intentId: String,
         val startedAt: Long,
+        /** 会话开始时的传输拓扑（REUSE / MULTI_CONNECTION），用于 A/B 对比时区分两组数据。 */
+        val topology: String = "",
         var chunksDone: Long = 0,
         var chunksFailed: Long = 0,
         var bytesDone: Long = 0,
@@ -36,11 +38,12 @@ object SessionTelemetry {
     @Volatile
     private var lastFinished: Session? = null
 
-    fun begin(intentId: String) {
+    fun begin(intentId: String, topology: String = "") {
         synchronized(lock) {
             sessions[intentId] = Session(
                 intentId = intentId,
                 startedAt = System.currentTimeMillis(),
+                topology = topology,
                 connectBaseline = ConnectionMetrics.snapshot().connectStarts
             )
         }

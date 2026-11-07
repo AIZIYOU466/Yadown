@@ -18,6 +18,7 @@ import com.yadown.core.net.RangeSource
 import com.yadown.core.net.ProbeResult
 import com.yadown.core.io.DownloadPaths
 import com.yadown.core.net.LinkRegistry
+import com.yadown.core.net.TransportTopologySettings
 import com.yadown.core.peer.PeerSourceProvider
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
@@ -98,7 +99,8 @@ class DownloadRepository @Inject constructor(
     private val eventDao: TransferEventDao,
     private val sourceRouter: SourceRouter,
     private val peerSourceProvider: PeerSourceProvider,
-    private val linkRegistry: LinkRegistry
+    private val linkRegistry: LinkRegistry,
+    private val topologySettings: TransportTopologySettings
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -245,7 +247,7 @@ class DownloadRepository @Inject constructor(
     /** 下载执行体：前台服务与 WorkManager 两条 Carrier 共用，区别只在谁负责保活。 */
     private suspend fun execute(intentId: String, url: String) {
         val startedAt = System.currentTimeMillis()
-        SessionTelemetry.begin(intentId)
+        SessionTelemetry.begin(intentId, topologySettings.topology.name)
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)
