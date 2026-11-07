@@ -54,6 +54,16 @@ com.yadown.core.source.SourceHealthModelTest
 com.yadown.core.source.RoomSourceHealthRegistryTest
 com.yadown.core.source.SourceRouterTest
 com.yadown.core.peer.PeerIndexTest
+com.yadown.core.peer.PeerProtocolTest
+com.yadown.core.peer.PeerCertificateTest
+com.yadown.core.peer.PeerTrustStoreTest
+com.yadown.core.peer.PeerChunkVerifierTest
+com.yadown.core.peer.PeerTlsTest
+com.yadown.core.peer.PeerServerTest
+com.yadown.core.peer.PeerHandshakeTest
+com.yadown.core.peer.PeerManifestClientTest
+com.yadown.core.peer.PeerSourceProviderTest
+com.yadown.core.peer.PeerDownloadIntegrationTest
 "
 
 java -cp "$CP" org.junit.runner.JUnitCore $CLASSES

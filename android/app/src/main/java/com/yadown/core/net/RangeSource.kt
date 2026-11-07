@@ -8,6 +8,9 @@ data class ProbeResult(
     val mimeType: String?
 )
 
+/** 局域网 peer 响应携带的分块校验头名，由传输层原样解析。 */
+const val XXHASH_HEADER = "X-Yadown-XxHash64"
+
 data class RangePayload(
     val bytes: ByteArray,
     val statusCode: Int,
@@ -16,7 +19,9 @@ data class RangePayload(
     val lastModified: String?,
     val totalSize: Long? = null,
     val contentEncoding: String? = null,
-    val retryAfterMs: Long? = null
+    val retryAfterMs: Long? = null,
+    /** 局域网 peer 在响应头声明的分块 xxHash64；普通源为 null。 */
+    val peerXxHash64: Long? = null
 )
 
 data class SequentialResult(

@@ -11,7 +11,9 @@ data class Peer(
     val port: Int,
     val contentHashes: Set<String>,
     val lastSeenAt: Long,
-    val reliability: Double = 0.5
+    val reliability: Double = 0.5,
+    /** mDNS 广播的证书指纹（仅用于命中信任库，不能作为配对依据）。 */
+    val fingerprint: String? = null
 )
 
 interface PeerDiscovery {

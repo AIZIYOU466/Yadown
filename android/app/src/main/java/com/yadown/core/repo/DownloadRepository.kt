@@ -16,6 +16,8 @@ import com.yadown.core.db.entity.IntentEntity
 import com.yadown.core.db.entity.TransferEventEntity
 import com.yadown.core.net.RangeSource
 import com.yadown.core.net.ProbeResult
+import com.yadown.core.io.DownloadPaths
+import com.yadown.core.peer.PeerSourceProvider
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
 import com.yadown.core.semantic.FormatResolverRegistry
@@ -61,6 +63,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -89,7 +92,8 @@ class DownloadRepository @Inject constructor(
     private val intentDao: IntentDao,
     private val chunkDao: ChunkDao,
     private val eventDao: TransferEventDao,
-    private val sourceRouter: SourceRouter
+    private val sourceRouter: SourceRouter,
+    private val peerSourceProvider: PeerSourceProvider
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -610,10 +614,20 @@ class DownloadRepository @Inject constructor(
             decodeMirrors(intent.mirrorUrlsJson).forEach {
                 add(SourceEndpoint(it, SourceKind.MIRROR))
             }
+            addAll(peerEndpoints(intent))
         }
         // 源健康读取失败只影响排序，不能阻断下载。
         return runCatching { sourceRouter.rank(endpoints) }.getOrDefault(emptyList())
     }
+
+    /**
+     * 局域网 peer 只作为附加源：查询与身份校验失败时静默跳过，不影响主源下载。
+     * 超时约束避免对端离线时把任务启动拖慢。
+     */
+    private suspend fun peerEndpoints(intent: IntentEntity): List<SourceEndpoint> =
+        withTimeoutOrNull(PEER_LOOKUP_TIMEOUT_MS) {
+            runCatching { peerSourceProvider.endpointsFor(intent) }.getOrDefault(emptyList())
+        } ?: emptyList()
 
     private fun decodeMirrors(text: String?): List<String> =
         text?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
@@ -664,19 +678,18 @@ class DownloadRepository @Inject constructor(
     }
 
     private fun destPathOf(intentId: String, url: String): String {
-        val dir = File(context.filesDir, "downloads").apply { mkdirs() }
-        return File(dir, "${intentId}_${fileNameOf(url)}").absolutePath
+        val dest = DownloadPaths.destFile(context.filesDir, intentId, url)
+        dest.parentFile?.mkdirs()
+        return dest.absolutePath
     }
 
-    private fun fileNameOf(url: String): String {
-        val path = runCatching { java.net.URI(url).path }.getOrNull().orEmpty()
-        return path.substringAfterLast('/').ifBlank { "download.bin" }
-    }
+    private fun fileNameOf(url: String): String = DownloadPaths.fileNameOf(url)
 
     private fun chunkId(intentId: String, index: Int): String = "$intentId-$index"
 
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
         const val PROGRESS_INTERVAL_MS = 200L
+        const val PEER_LOOKUP_TIMEOUT_MS = 2_000L
     }
 }

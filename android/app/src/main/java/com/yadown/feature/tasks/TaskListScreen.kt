@@ -75,8 +75,8 @@ fun TaskListScreen(viewModel: TaskListViewModel = hiltViewModel()) {
                 title = { Text("Yadown", fontWeight = FontWeight.SemiBold) },
                 actions = {
                     TextButton(onClick = { showBackgroundGuide = true }) { Text("后台") }
+                    TextButton(onClick = { showPeers = true }) { Text("附近") }
                     if (BuildConfig.DEBUG) {
-                        TextButton(onClick = { showPeers = true }) { Text("附近") }
                         TextButton(onClick = { showP0 = true }) { Text("P0") }
                     }
                 }

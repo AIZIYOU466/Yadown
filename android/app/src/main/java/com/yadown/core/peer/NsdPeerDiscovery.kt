@@ -6,6 +6,7 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import com.yadown.core.db.dao.PeerIndexDao
 import com.yadown.core.db.entity.PeerIndexEntity
+import java.net.Inet4Address
 import java.nio.charset.StandardCharsets
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
@@ -104,13 +105,16 @@ class NsdPeerDiscovery(
         val host = hostOf(info) ?: return null
         if (info.port <= 0) return null
         val attributes = info.attributes.orEmpty()
-        val contentHashes = attributes["hashes"]
+        val contentHashes = attributes["keys"]
             ?.let { String(it, StandardCharsets.UTF_8) }
             ?.split(',')
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() }
             ?.toSet()
             .orEmpty()
+        val fingerprint = attributes["fp"]
+            ?.let { String(it, StandardCharsets.UTF_8).trim().lowercase() }
+            ?.takeIf { it.length == 64 }
         val name = attributes["name"]
             ?.let { String(it, StandardCharsets.UTF_8).trim() }
             ?.takeIf { it.isNotEmpty() }
@@ -121,16 +125,21 @@ class NsdPeerDiscovery(
             host = host,
             port = info.port,
             contentHashes = contentHashes,
-            lastSeenAt = clock()
+            lastSeenAt = clock(),
+            fingerprint = fingerprint
         )
     }
 
+    /** 局域网内优先用 IPv4：IPv6 链路本地地址在 URL 中不可直接使用。 */
     private fun hostOf(info: NsdServiceInfo): String? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            info.hostAddresses.firstOrNull()?.hostAddress?.let { return it }
+        val addresses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            info.hostAddresses
+        } else {
+            @Suppress("DEPRECATION")
+            listOfNotNull(info.host)
         }
-        @Suppress("DEPRECATION")
-        return info.host?.hostAddress
+        return addresses.firstOrNull { it is Inet4Address }?.hostAddress
+            ?: addresses.firstOrNull()?.hostAddress
     }
 
     private suspend fun persist(peer: Peer) {

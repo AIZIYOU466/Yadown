@@ -77,7 +77,8 @@
 - **T4.1 已完成**：`core/source/` 的 `SourceHealthModel` + `RoomSourceHealthRegistry`；EWMA 吞吐/延迟/失败率、24h TTL、连接上限 2→4 学习与失败减半回滚。
 - **T4.4 已完成（源站/镜像）**：`SourceRanker` 评分与 `SourceSelection` 逐块选源；镜像必须通过内容身份校验（大小、Range 能力、ETag/Last-Modified）才启用；UI 新建任务支持多行 URL。
 - **T4.2 部分完成（仅发现端）**：`NsdPeerDiscovery` + `PeerIndex` + `peer_index` 持久化；未注册服务、未传数据，debug 入口可查看发现结果。
-- **T4.3 / T4.5 未开始**：分别受 P0.2（mDNS 真机）与 P0.1（多链路真机）门槛阻塞。peer 信任模型已定案：自签 TLS + 首次 6 位短码比对证书指纹（TOFU）+ 分块 xxHash64，禁止明文 HTTP。
+- **T4.3 已完成（容器级 + 单测，真机待验证）**：TLS Range 服务端（`lookup`/`content`）、AndroidKeyStore 自签身份、短码 TOFU、manifest 身份校验、分块 xxHash64 校验、配对与手动配对 UI；TLS 固定 1.2，明文 HTTP 不存在回退路径。真机项：AndroidKeyStore 私钥握手、NsdManager 注册/发现互操作、局域网传输成功率 > 95%。
+- **T4.5 未开始**：受 P0.1（多链路真机）门槛阻塞。
 
 ---
 
@@ -104,7 +105,8 @@
 - [ ] ROM 存活：HyperOS/EMUI/ColorOS/OriginOS 后台 30 分钟存活率。
 - [ ] 媒体库：Android 10+ 完成后公共 Downloads 可打开，私有副本仍在。
 - [ ] 边下边播：暂停/失败/重启后打开播放器，30s 内给出错误或继续播放，不永久卡死。
-- [ ] peer：确认未启用明文 HTTP；T4.3 实施前按已定案信任模型（自签 TLS + 短码 TOFU + 内容哈希）评审。
+- [ ] peer：确认未启用明文 HTTP；两台真机开启局域网加速，核对双方短码后配对，验证 peer 作为唯一源与混合源的完成率与吞吐。
+- [ ] peer 指纹变化：对端重装/清数据后必须重新配对，不得静默沿用旧信任。
 
 ---
 
@@ -129,7 +131,7 @@
 | UI 接入 | 已完成 | 真实任务流、新建任务、暂停/继续/重试、打开/删除 |
 | P2 系统生存层 | 已完成（真机项待验证） | T2.1 PlatformAdapter 五项探测（ROM/UIDT/存储能力/网络可达性/存储加密）；T2.2 Carrier 选择已接入下载路径（前台 FGS / 后台 UIDT 或 WorkManager、Doze 停传）；T2.3 ROM 感知后台引导（小米/华为/OPPO/vivo 直达设置页 + 电池白名单）；T2.4 完成后公共媒体库发布（仅 Android 10+）；T2.5 FsyncGate；FGS `onTimeout` 与 UIDT JobService 已实现；存活率需真机测 |
 | P3 内容语义层 | 已完成（真机项待验证） | **T3.1 MP4 moov 优先（可边下边播）/ T3.2 APK Manifest 优先 / T3.3 PDF xref+Root 优先 / T3.4 AvailabilityContract 驱动 UI 解锁 / T3.5 未知格式顺序传输**；语义优先调度只改排队不动分块边界；APK 受 T0.3 约束仍为「下完再装」；PDF 查看器未接入，暂不承诺部分预览 |
-| P4 多源协同层 | L2 核心已完成（编译级 + 单测，真机待验证） | T4.1 SourceHealthRegistry / T4.4 源站+镜像路由 / T4.2 mDNS 发现端已落地；T4.3 peer 传输与 T4.5 LinkAggregator 待 P0.1/P0.2 真机；信任模型定案：自签 TLS + 短码 TOFU |
+| P4 多源协同层 | T4.1/T4.4/T4.2 已完成；T4.3 已完成（编译级 + 单测，真机待验证）；T4.5 待 P0.1 | T4.1 SourceHealthRegistry / T4.4 源站+镜像路由 / T4.2 mDNS 发现端 / T4.3 peer TLS 传输（短码 TOFU + 内容身份 + 分块 xxHash64）；T4.5 LinkAggregator 待 P0.1 真机 |
 | P5 集成真机验证 | 自动化部分完成（P5.1/P5.2）；真机项未开始 | 端到端 mock server 与断点恢复测试已入单测；首播/掉电/弱网/ROM/媒体库/边下边播清单待真机回填 |
 
-*ROADMAP 版本：v1.1 — 2026-11-06*
+*ROADMAP 版本：v1.2 — 2026-11-07*

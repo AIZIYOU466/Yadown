@@ -72,9 +72,13 @@ CP="$CP:$OUT/gen"
 MAIN_SRC=$(find app/src/main/java -name '*.kt' | tr '\n' ' ')
 TEST_SRC=$(find app/src/test/java -name '*.kt' | tr '\n' ' ')
 # Compose 编译器插件：Kotlin 2.x 的 Compose 代码必须经过它才能生成字节码。
+# kotlinx.serialization 也需要编译器插件生成 serializer，Gradle 构建由插件自动加载，
+# 独立编译器则要显式加 -Xplugin。
 COMPOSE_PLUGIN=/tmp/ktc/compose-plugin.jar
+SERIALIZATION_PLUGIN=$(find /root/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-serialization-compiler-plugin-embeddable -name '*.jar' 2>/dev/null | head -1)
 PLUGIN_ARG=""
-if [ -f "$COMPOSE_PLUGIN" ]; then PLUGIN_ARG="-Xplugin=$COMPOSE_PLUGIN"; fi
+if [ -f "$COMPOSE_PLUGIN" ]; then PLUGIN_ARG="$PLUGIN_ARG -Xplugin=$COMPOSE_PLUGIN"; fi
+if [ -n "$SERIALIZATION_PLUGIN" ]; then PLUGIN_ARG="$PLUGIN_ARG -Xplugin=$SERIALIZATION_PLUGIN"; fi
 
 echo "== compiling main =="
 java -cp "$COMPILER_CP" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \

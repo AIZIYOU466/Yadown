@@ -351,6 +351,18 @@ interface SourceRouter {
 - 内容按分块 xxHash64 校验，并核对内容身份（大小 + ETag/Last-Modified 或签名内容清单）。
 - mDNS 本地网络权限：targetSdk 36 及以下由 INTERNET 隐式授予，**不要**声明 `ACCESS_LOCAL_NETWORK`；targetSdk 37+ 才声明并在运行时请求，或优先使用 `DiscoveryRequest.FLAG_SHOW_PICKER` 的系统选择器。
 
+**T4.3 实现口径（2026-11）**：
+
+- 协议：`GET /v1/lookup/<contentKey>` 返回 manifest；`GET /v1/content/<contentId>` 只接受单区间 `Range`，返回 206 + `Content-Range`/`ETag`/`Last-Modified`/`X-Yadown-XxHash64`。越界、多区间、缺 Range 返回 416；非 GET 405；非法路径 400。
+- `contentKey` = 规范化 sourceUrl（scheme/host 小写、去默认端口、保留 path/query、拒绝带 userInfo）的 SHA-256 前 16 hex。
+- 身份校验：manifest 的 `contentKey`、`size` 必须与本地一致；强 ETag 相等，或（无强 ETag 时）Last-Modified 相等。两项都没有的任务不参与 peer 传输。
+- 分块校验：服务端对每个响应区间计算 xxHash64 写入响应头；客户端在 `PeerRangeSource` 中与收到的字节比对，缺失或不匹配都按 `CHECKSUM_MISMATCH` 失败，不降级放行。
+- 证书：AndroidKeyStore 生成 RSA 2048 自签证书（PURPOSE_SIGN + DIGEST_NONE + PKCS1），TLS 固定 1.2（TLS 1.3 需要 RSA-PSS 签名授权）；私钥不可导出。
+- TOFU 存 `filesDir/peer_trust.json`（原子替换），以证书指纹为键，不写 Room：指纹是稳定身份，`peer_index.peer_id` 会随服务名变化。
+- 共享范围：仅 `COMPLETED`、支持 Range 且文件长度与记录一致的任务；共享总开关默认关闭，关闭即停止服务端与发现。
+- mDNS TXT 只广播设备名、证书指纹与最近 4 个 contentKey（受 key+value < 255 字节限制）；广播的指纹只用于命中信任库，配对短码始终来自实际 TLS 握手。
+- 服务端限制：单请求区间 ≤2MiB、单连接 15s、全局 8 连接、keep-alive ≤32 请求；contentId 只用于查共享白名单，不拼入文件路径。
+
 三条工程假设需在此层验证（见第 8 节）。
 
 ### 5.3 L3 传输收敛层

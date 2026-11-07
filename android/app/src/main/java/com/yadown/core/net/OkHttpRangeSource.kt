@@ -196,8 +196,16 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         lastModified = lastModified,
         totalSize = parseTotalSize(contentRange),
         contentEncoding = contentEncoding,
-        retryAfterMs = retryAfterMs
+        retryAfterMs = retryAfterMs,
+        peerXxHash64 = parseXxHash(response.header(XXHASH_HEADER))
     )
+
+    private fun parseXxHash(value: String?): Long? {
+        val text = value?.trim()?.removePrefix("0x")?.removePrefix("0X") ?: return null
+        if (text.isEmpty() || text.length > 16) return null
+        return text.toLongOrNull(16)
+            ?: runCatching { java.lang.Long.parseUnsignedLong(text, 16) }.getOrNull()
+    }
 
     private fun contentRangeMatches(value: String?, start: Long, endInclusive: Long): Boolean {
         val match = CONTENT_RANGE.matchEntire(value?.trim() ?: return false) ?: return false
