@@ -32,6 +32,10 @@ data class HttpResponse(
  */
 class TestHttpServer(
     private val keepAlive: Boolean = false,
+    /** 每连接限速（字节/秒）；0 表示不限速，用于复现单连接带宽上限。 */
+    private val throttleBytesPerSec: Int = 0,
+    /** 首个响应前的固定延迟，模拟 RTT/握手。 */
+    private val latencyMs: Long = 0,
     private val handler: (HttpRequest) -> HttpResponse
 ) : Closeable {
 
@@ -99,6 +103,7 @@ class TestHttpServer(
                     val request = HttpRequest(method, path, headers, connectionId)
                     recorded += request
                     val response = handler(request)
+                    if (latencyMs > 0) Thread.sleep(latencyMs)
                     val reason = when (response.code) {
                         200 -> "OK"
                         206 -> "Partial Content"
@@ -113,13 +118,30 @@ class TestHttpServer(
                         append(if (keepAlive) "Connection: keep-alive\r\n\r\n" else "Connection: close\r\n\r\n")
                     }
                     output.write(head.toByteArray(Charsets.ISO_8859_1))
-                    output.write(response.body)
+                    writeBodyThrottled(output, response.body)
                     output.flush()
                     if (!keepAlive) return
                 }
             }
         } catch (_: IOException) {
             // 客户端提前关闭（例如 200 部分区间）是预期行为。
+        }
+    }
+
+    private fun writeBodyThrottled(output: java.io.OutputStream, body: ByteArray) {
+        if (throttleBytesPerSec <= 0) {
+            output.write(body)
+            return
+        }
+        val step = 8 * 1024
+        val stepMs = (step * 1000L / throttleBytesPerSec).coerceAtLeast(1)
+        var offset = 0
+        while (offset < body.size) {
+            val n = minOf(step, body.size - offset)
+            output.write(body, offset, n)
+            output.flush()
+            offset += n
+            if (offset < body.size) Thread.sleep(stepMs)
         }
     }
 }

@@ -35,6 +35,7 @@ com.yadown.core.transfer.DownloadEngineTest
 com.yadown.core.transfer.MultiSourceDownloadTest
 com.yadown.core.transfer.CrashRecoveryTest
 com.yadown.core.transfer.EndToEndDownloadTest
+com.yadown.core.bench.CapabilityBenchmarkTest
 com.yadown.core.transfer.DownloadPlanTest
 com.yadown.core.transfer.DownloadPlanPriorityTest
 com.yadown.core.transfer.FailureRecoveryTest
