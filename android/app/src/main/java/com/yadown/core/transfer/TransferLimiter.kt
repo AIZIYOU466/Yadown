@@ -9,8 +9,8 @@ import java.net.URI
  */
 object TransferLimiter {
 
-    private const val DEFAULT_GLOBAL_REQUESTS = 8
-    private const val DEFAULT_PER_KEY_REQUESTS = 4
+    private const val DEFAULT_GLOBAL_REQUESTS = 16
+    private const val DEFAULT_PER_KEY_REQUESTS = 8
 
     private val limiter = DynamicLimiter(DEFAULT_GLOBAL_REQUESTS, DEFAULT_PER_KEY_REQUESTS)
 

@@ -1,6 +1,7 @@
 package com.yadown.core.source
 
 import com.yadown.core.transfer.FailureCause
+import java.util.concurrent.ConcurrentHashMap
 
 /** 单个源的跨会话健康快照，字段与 `source_health` 表一一对应。 */
 data class SourceHealth(
@@ -25,6 +26,9 @@ class SourceHealthModel(
     private val alpha: Double = DEFAULT_ALPHA
 ) {
 
+    /** 连续失败计数只在进程内维护：瞬时故障不应被永久写入源站质量。 */
+    private val consecutiveFailures = ConcurrentHashMap<String, Int>()
+
     fun onSuccess(
         sourceKey: String,
         previous: SourceHealth?,
@@ -32,10 +36,12 @@ class SourceHealthModel(
         latencyMs: Double
     ): SourceHealth {
         val now = clock()
+        consecutiveFailures.remove(sourceKey)
         val observedThroughput = throughput.coerceAtLeast(0.0)
         val observedLatency = latencyMs.coerceAtLeast(0.0)
         val prevThroughput = previous?.throughput
-        val failureRate = if (previous == null) 0.0 else previous.failureRate * (1 - alpha)
+        // 成功时快速衰减失败率，避免一次坏链接把并发锁在低档数十分钟。
+        val failureRate = if (previous == null) 0.0 else previous.failureRate * 0.5
         val nextThroughput = if (prevThroughput == null) {
             observedThroughput
         } else {
@@ -74,10 +80,14 @@ class SourceHealthModel(
     ): SourceHealth? {
         if (cause !in SOURCE_FAULTS) return null
         val now = clock()
+        val consecutive = consecutiveFailures.merge(sourceKey, 1, Int::plus) ?: 1
         val prevFailure = previous?.failureRate ?: 0.0
         val failureRate = alpha + (1 - alpha) * prevFailure
         val currentLimit = previous?.connectionLimit ?: INITIAL_CONNECTION_LIMIT
-        val nextLimit = if (failureRate > ROLLBACK_FAILURE_RATE) {
+        // 单次超时不降并发；连续失败或窗口失败率过高才减半，避免 CDN 偶发抖动打穿并发。
+        val rollback = consecutive >= CONSECUTIVE_FAILURE_THRESHOLD ||
+            failureRate > ROLLBACK_FAILURE_RATE
+        val nextLimit = if (rollback) {
             maxOf(MIN_CONNECTION_LIMIT, currentLimit / 2)
         } else {
             currentLimit
@@ -104,11 +114,12 @@ class SourceHealthModel(
     companion object {
         const val DEFAULT_TTL_MS = 24L * 60 * 60 * 1000
         const val DEFAULT_ALPHA = 0.3
-        const val INITIAL_CONNECTION_LIMIT = 4
-        const val MIN_CONNECTION_LIMIT = 1
-        const val MAX_CONNECTION_LIMIT = 6
-        const val EXPAND_FAILURE_RATE = 0.05
-        const val ROLLBACK_FAILURE_RATE = 0.2
+        const val INITIAL_CONNECTION_LIMIT = 8
+        const val MIN_CONNECTION_LIMIT = 2
+        const val MAX_CONNECTION_LIMIT = 16
+        const val EXPAND_FAILURE_RATE = 0.2
+        const val ROLLBACK_FAILURE_RATE = 0.5
+        const val CONSECUTIVE_FAILURE_THRESHOLD = 3
         const val UNUSABLE_FAILURE_RATE = 0.8
 
         /** 可归因于源/网络路径本身的失败。 */

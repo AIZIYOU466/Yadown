@@ -12,6 +12,7 @@ import com.yadown.core.source.SourceEndpoint
 import com.yadown.core.source.SourceHealthRegistry
 import com.yadown.core.source.SourceRoute
 import com.yadown.core.source.SourceSelection
+import com.yadown.core.telemetry.SessionTelemetry
 import com.yadown.core.telemetry.TransferTelemetry
 import com.yadown.core.survival.FsyncGate
 import java.io.File
@@ -211,6 +212,7 @@ class DownloadEngine(
                             }
                             health.recordSuccess()
                             breaker.onSuccess(route.healthKey)
+                            SessionTelemetry.onChunkDone(intentId, next.chunk.length())
                             if (availability != null && readyRanges != null && !availableUnlocked.get()) {
                                 readyRanges.add(next.chunk.start..next.chunk.endInclusive)
                                 if (availability.isAvailable { s, e -> readyRanges.covers(s, e) } &&
@@ -235,6 +237,7 @@ class DownloadEngine(
                             )
                             runCatching { healthRegistry?.recordFailure(route.healthKey, cause) }
                             TransferTelemetry.onChunkFailed(cause)
+                            SessionTelemetry.onChunkFailed(intentId)
                             Outcome.Failed(next.chunk, cause, e.message ?: "", next.retryCount, next.sourceSlot)
                         } finally {
                             inFlight.getValue(route.healthKey).decrementAndGet()
@@ -470,6 +473,7 @@ class DownloadEngine(
         if (cause == FailureCause.RATE_LIMITED) {
             chunkDao.updateState(id, ChunkState.PENDING.name)
             pending.addLast(PendingChunk(chunk, retryCount + 1, sourceSlot + 1))
+            SessionTelemetry.onRetry(intentId)
             return true
         }
 
@@ -509,9 +513,11 @@ class DownloadEngine(
             pending.addLast(
                 PendingChunk(ChunkRange(indexB, split.second.first, split.second.last), retryCount + 1, nextSlot)
             )
+            SessionTelemetry.onRetry(intentId)
         } else {
             chunkDao.updateState(id, ChunkState.PENDING.name)
             pending.addLast(PendingChunk(chunk, retryCount + 1, sourceSlot + 1))
+            SessionTelemetry.onRetry(intentId)
         }
         return true
     }
@@ -535,7 +541,7 @@ class DownloadEngine(
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
         val payload = TransferLimiter.withPermit(route.url, route.linkId, route.connectionLimit) {
-            readRangeWithWatchdog(route.url, route.linkId, chunk, startedAt, total)
+            readRangeWithWatchdog(intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total)
         }
 
         val validation = RangeValidator.validate(
@@ -589,14 +595,22 @@ class DownloadEngine(
      * 超时则取消底层请求并归因 NETWORK_TIMEOUT。
      */
     private suspend fun readRangeWithWatchdog(
+        intentId: String,
         url: String,
         linkId: String?,
+        connectionLimit: Int,
         chunk: ChunkRange,
         startedAt: Long,
         totalSize: Long
     ): RangePayload {
+        // 低并发/慢源放宽 stall：慢边缘节点上 20s 就取消会把接近完成的请求反复掐断。
+        val stallTimeoutMs = if (connectionLimit <= 2) {
+            SLOW_SOURCE_STALL_TIMEOUT_MS
+        } else {
+            StallWatchdog.DEFAULT_TIMEOUT_MS
+        }
         val watchdog = StallWatchdog(
-            timeoutMs = StallWatchdog.DEFAULT_TIMEOUT_MS,
+            timeoutMs = stallTimeoutMs,
             startAtMs = startedAt
         )
         val stalled = AtomicBoolean(false)
@@ -624,7 +638,13 @@ class DownloadEngine(
                     break
                 }
                 val transferred = received.get()
-                if (monitor.shouldSplit(chunk.index, chunk.length() - transferred, transferred)) {
+                if (monitor.shouldSplit(
+                        chunkIndex = chunk.index,
+                        transferredBytes = transferred,
+                        chunkLength = chunk.length(),
+                        connectionLimit = connectionLimit
+                    )
+                ) {
                     splitRequested.set(true)
                     work.cancel()
                     break
@@ -639,13 +659,15 @@ class DownloadEngine(
                 }
                 if (stalled.get()) {
                     TransferTelemetry.onStall()
-                    throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
+                    SessionTelemetry.onStall(intentId)
+                    throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${stallTimeoutMs}ms")
                 }
                 throw e
             } catch (e: Exception) {
                 if (stalled.get()) {
                     TransferTelemetry.onStall()
-                    throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
+                    SessionTelemetry.onStall(intentId)
+                    throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${stallTimeoutMs}ms")
                 }
                 throw e
             }
@@ -674,6 +696,7 @@ class DownloadEngine(
             }
             chunkDao.updateState(id, ChunkState.PENDING.name)
             pending.addFirst(PendingChunk(chunk, retryCount + 1, sourceSlot + 1))
+            SessionTelemetry.onRetry(intentId)
             return SlowHandling.Retry
         }
 
@@ -705,6 +728,7 @@ class DownloadEngine(
             PendingChunk(ChunkRange(indexB, split.second.first, split.second.last), 0, sourceSlot)
         )
         TransferTelemetry.onSlowSplit()
+        SessionTelemetry.onSlowSplit(intentId)
         return SlowHandling.Split
     }
 
@@ -776,6 +800,7 @@ class DownloadEngine(
 
     companion object {
         private const val WATCHDOG_POLL_MS = 500L
+        private const val SLOW_SOURCE_STALL_TIMEOUT_MS = 45_000L
         private const val DEFAULT_STORAGE_IOPS = 3_000
         private val NO_SPLIT_CAUSES = setOf(
             FailureCause.SERVER_RANGE_UNSUPPORTED,

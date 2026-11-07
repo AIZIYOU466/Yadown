@@ -40,7 +40,30 @@ fun DiagnosticsDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
-                Text("调度", style = MaterialTheme.typography.titleSmall)
+                Text("本次任务", style = MaterialTheme.typography.titleSmall)
+                state.session?.let { session ->
+                    Text(
+                        "完成 ${session.chunksDone} · 失败 ${session.chunksFailed} · 重试 ${session.retries}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        "字节 ${session.bytesDone} · stall ${session.stalls} · 慢裂解 ${session.slowSplits}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        if (session.finishedAt == null) "进行中" else "已结束",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.semanticColors.subtleText
+                    )
+                } ?: Text(
+                    "暂无会话数据",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.semanticColors.subtleText
+                )
+
+                HorizontalDivider()
+
+                Text("进程累计（含历史）", style = MaterialTheme.typography.titleSmall)
                 state.telemetry?.let { telemetry ->
                     Text(
                         "完成 ${telemetry.chunksDone} · 失败 ${telemetry.chunksFailed}",

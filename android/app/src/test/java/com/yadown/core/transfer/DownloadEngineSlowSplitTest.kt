@@ -78,7 +78,7 @@ class DownloadEngineSlowSplitTest {
                 while (sent < length) {
                     delay(20)
                     // 约 200KB/s，低于 256KB/s 的低速阈值，触发 512KB 粒度裂解。
-                    sent = minOf(length, sent + 4 * 1024)
+                    sent = minOf(length, sent + 1024)
                     onProgress(sent.toLong())
                 }
             } else {

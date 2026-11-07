@@ -230,9 +230,16 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         private const val MAX_BUFFER = 4L * 1024 * 1024
         private val CONTENT_RANGE = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""")
 
-        /** 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。 */
+        /** 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。
+         *  Dispatcher 显式放宽：OkHttp 默认每主机 5 是隐藏上限，会卡住高并发下载。 */
         fun createClient(readTimeoutMs: Long = 20_000): OkHttpClient =
             OkHttpClient.Builder()
+                .dispatcher(
+                    okhttp3.Dispatcher().apply {
+                        maxRequests = 64
+                        maxRequestsPerHost = 32
+                    }
+                )
                 .eventListener(ConnectionMetrics.listener)
                 .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
                 .build()

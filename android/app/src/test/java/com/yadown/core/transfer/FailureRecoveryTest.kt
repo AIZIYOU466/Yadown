@@ -14,6 +14,11 @@ class FailureRecoveryTest {
     }
 
     @Test
+    fun linkExpired_pauseNotifyUser() {
+        assertEquals(RecoveryAction.PAUSE_NOTIFY_USER, action(FailureCause.LINK_EXPIRED))
+    }
+
+    @Test
     fun dnsResolveFailed_retryBackoff() {
         assertEquals(RecoveryAction.RETRY_BACKOFF, action(FailureCause.DNS_RESOLVE_FAILED))
     }

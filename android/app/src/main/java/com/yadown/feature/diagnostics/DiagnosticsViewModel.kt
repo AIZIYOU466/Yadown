@@ -3,6 +3,7 @@ package com.yadown.feature.diagnostics
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yadown.core.net.ConnectionMetrics
+import com.yadown.core.telemetry.SessionTelemetry
 import com.yadown.core.telemetry.TransferTelemetry
 import com.yadown.core.transfer.DynamicLimiter
 import com.yadown.core.transfer.TransferLimiter
@@ -20,6 +21,7 @@ import kotlinx.coroutines.launch
 class DiagnosticsViewModel @Inject constructor() : ViewModel() {
 
     data class UiState(
+        val session: SessionTelemetry.Session? = null,
         val telemetry: TransferTelemetry.Snapshot? = null,
         val connections: ConnectionMetrics.Snapshot? = null,
         val limiter: DynamicLimiter.Snapshot? = null
@@ -32,6 +34,7 @@ class DiagnosticsViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch {
             while (isActive) {
                 _state.value = UiState(
+                    session = SessionTelemetry.latest(),
                     telemetry = TransferTelemetry.snapshot(),
                     connections = ConnectionMetrics.snapshot(),
                     limiter = TransferLimiter.snapshot()

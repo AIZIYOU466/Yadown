@@ -27,11 +27,11 @@ class ChunkThroughputMonitorTest {
         monitor.onProgress(1, 0)
         now = 1_000
         monitor.onProgress(1, 1_000)
-        assertFalse(monitor.shouldSplit(1, remainingBytes = 10_000, transferredBytes = 1_000))
+        assertFalse(monitor.shouldSplit(1, transferredBytes = 1_000, chunkLength = 12_000, connectionLimit = 4))
 
         now = 2_000
         monitor.onProgress(1, 2_000)
-        assertTrue(monitor.shouldSplit(1, remainingBytes = 10_000, transferredBytes = 2_000))
+        assertTrue(monitor.shouldSplit(1, transferredBytes = 2_000, chunkLength = 12_000, connectionLimit = 4))
     }
 
     @Test
@@ -42,15 +42,15 @@ class ChunkThroughputMonitorTest {
         monitor.onProgress(1, 1_000)
         now = 2_000
         monitor.onProgress(1, 2_000)
-        assertTrue(monitor.shouldSplit(1, 10_000, 2_000))
+        assertTrue(monitor.shouldSplit(1, 2_000, 12_000, 4))
 
         now = 3_000
-        monitor.onProgress(1, 2_000 + 200_000)
-        assertFalse(monitor.shouldSplit(1, 10_000, 202_000))
+        monitor.onProgress(1, 202_000)
+        assertFalse(monitor.shouldSplit(1, 202_000, 12_000, 4))
     }
 
     @Test
-    fun splitRequiresRemainingLargerThanTransferred() {
+    fun transferredOverQuarterDisablesSplit() {
         val monitor = monitor()
         monitor.onProgress(1, 0)
         now = 1_000
@@ -58,8 +58,20 @@ class ChunkThroughputMonitorTest {
         now = 2_000
         monitor.onProgress(1, 2_000)
 
-        assertFalse(monitor.shouldSplit(1, remainingBytes = 1_000, transferredBytes = 2_000))
-        assertTrue(monitor.shouldSplit(1, remainingBytes = 10_000, transferredBytes = 2_000))
+        assertFalse(monitor.shouldSplit(1, transferredBytes = 2_000, chunkLength = 2_000, connectionLimit = 4))
+        assertTrue(monitor.shouldSplit(1, transferredBytes = 2_000, chunkLength = 12_000, connectionLimit = 4))
+    }
+
+    @Test
+    fun singleConnectionNeverSplits() {
+        val monitor = monitor()
+        monitor.onProgress(1, 0)
+        now = 1_000
+        monitor.onProgress(1, 1_000)
+        now = 2_000
+        monitor.onProgress(1, 2_000)
+
+        assertFalse(monitor.shouldSplit(1, 2_000, 12_000, connectionLimit = 1))
     }
 
     @Test
@@ -68,7 +80,7 @@ class ChunkThroughputMonitorTest {
         monitor.onProgress(1, 0)
         monitor.onChunkFinished(1)
 
-        assertFalse(monitor.shouldSplit(1, 10_000, 1_000))
+        assertFalse(monitor.shouldSplit(1, 1_000, 12_000, 4))
         assertEquals(0.0, monitor.rateOf(1), 0.0001)
     }
 

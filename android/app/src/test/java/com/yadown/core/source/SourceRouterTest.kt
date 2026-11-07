@@ -25,6 +25,21 @@ class SourceRouterTest {
     }
 
     @Test
+    fun releaseAssetUuidIsPartOfHealthKey() {
+        val first = SourceKey.of(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/" +
+                "679086250/9527f7b8-5f38-4dc9-8d5a-c82a69f6a3b9?signature=a"
+        )
+        val second = SourceKey.of(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/" +
+                "679086250/11111111-2222-3333-4444-555555555555?signature=b"
+        )
+
+        assertNotEquals("不同 release 文件不能共享健康键", first, second)
+        assertTrue(first.endsWith("9527f7b8-5f38-4dc9-8d5a-c82a69f6a3b9"))
+    }
+
+    @Test
     fun contentIdentityRequiresAProvableMatcher() {
         val primary = ProbeResult(100, true, "\"v1\"", null, null)
 

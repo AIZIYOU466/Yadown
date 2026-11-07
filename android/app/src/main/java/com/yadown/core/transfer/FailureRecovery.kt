@@ -37,6 +37,7 @@ object FailureRecovery {
             FailureCause.RANGE_NOT_SATISFIABLE -> RecoveryAction.RETRY_BACKOFF
             FailureCause.CHECKSUM_MISMATCH -> RecoveryAction.RETRY_BACKOFF
             FailureCause.RATE_LIMITED -> RecoveryAction.RETRY_BACKOFF
+            FailureCause.LINK_EXPIRED -> RecoveryAction.PAUSE_NOTIFY_USER
             FailureCause.BUDGET_EXCEEDED -> RecoveryAction.PAUSE_NOTIFY_USER
             FailureCause.PEER_UNAVAILABLE -> RecoveryAction.REDUCE_CONCURRENCY_SWITCH_SOURCE
             FailureCause.INCOMPLETE -> RecoveryAction.NONE

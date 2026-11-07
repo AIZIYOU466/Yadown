@@ -37,13 +37,17 @@ data class SourceRoute(
 }
 
 object SourceKey {
+    /** GitHub release assets 的第三段是文件 UUID；不纳入会导致同 repo 不同文件共享一次坏链接的惩罚。 */
+    private val UUID_LIKE = Regex(
+        """^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"""
+    )
+
     fun of(url: String): String {
         val uri = runCatching { URI(url) }.getOrNull() ?: return "unknown"
         val host = uri.host?.lowercase() ?: "unknown"
-        val segments = uri.path.orEmpty()
-            .split('/')
-            .filter { it.isNotBlank() }
-            .take(2)
+        val all = uri.path.orEmpty().split('/').filter { it.isNotBlank() }
+        val take = if (all.size >= 3 && UUID_LIKE.matches(all[2])) 3 else 2
+        val segments = all.take(take)
         return if (segments.isEmpty()) host else "$host/${segments.joinToString("/")}"
     }
 }

@@ -22,18 +22,18 @@ class SourceHealthModelTest {
         assertEquals(1_000.0, health.throughput, 1e-9)
         assertEquals(0.0, health.failureRate, 1e-9)
         assertEquals(100.0, health.latencyMs, 1e-9)
-        assertEquals(5, health.connectionLimit)
+        assertEquals(9, health.connectionLimit)
         assertEquals(now + 60_000, health.expiresAt)
     }
 
     @Test
-    fun connectionLimitExpandsUpToSix() {
+    fun connectionLimitExpandsUpToSixteen() {
         var health: SourceHealth? = null
-        repeat(6) {
+        repeat(20) {
             health = success(prev = health)
         }
 
-        assertEquals(6, health!!.connectionLimit)
+        assertEquals(16, health!!.connectionLimit)
     }
 
     @Test
@@ -46,24 +46,29 @@ class SourceHealthModelTest {
     }
 
     @Test
-    fun sourceFailureRollsBackLimitImmediately() {
+    fun singleFailureDoesNotRollbackButRepeatedOnesDo() {
         val healthy = success(prev = null)
-        assertEquals(5, healthy.connectionLimit)
+        assertEquals(9, healthy.connectionLimit)
 
-        val failed = model.onFailure("cdn.example.com/a/b", healthy, FailureCause.NETWORK_TIMEOUT)
+        val firstFailure = model.onFailure("cdn.example.com/a/b", healthy, FailureCause.NETWORK_TIMEOUT)!!
+        assertEquals("单次超时不降并发", 9, firstFailure.connectionLimit)
+        assertEquals(0.3, firstFailure.failureRate, 1e-9)
 
-        assertEquals(0.3, failed!!.failureRate, 1e-9)
-        assertEquals(2, failed.connectionLimit)
+        val secondFailure = model.onFailure("cdn.example.com/a/b", firstFailure, FailureCause.NETWORK_TIMEOUT)!!
+        assertEquals("第二次失败触发回滚", 4, secondFailure.connectionLimit)
+
+        val thirdFailure = model.onFailure("cdn.example.com/a/b", secondFailure, FailureCause.NETWORK_TIMEOUT)!!
+        assertEquals(2, thirdFailure.connectionLimit)
     }
 
     @Test
-    fun repeatedFailuresMarkSourceUnusableAndLimitNeverZero() {
+    fun repeatedFailuresMarkSourceUnusableAndLimitNeverBelowTwo() {
         var health: SourceHealth? = null
-        repeat(5) {
+        repeat(6) {
             health = model.onFailure("cdn.example.com/a/b", health, FailureCause.RATE_LIMITED)
         }
 
-        assertEquals(1, health!!.connectionLimit)
+        assertEquals(2, health!!.connectionLimit)
         assertTrue(health!!.failureRate > 0.8)
         assertFalse(model.isUsable(health))
     }
@@ -75,16 +80,17 @@ class SourceHealthModelTest {
         assertNull(model.onFailure("cdn.example.com/a/b", healthy, FailureCause.STORAGE_FULL))
         assertNull(model.onFailure("cdn.example.com/a/b", healthy, FailureCause.CONTENT_CHANGED))
         assertNull(model.onFailure("cdn.example.com/a/b", healthy, FailureCause.CHECKSUM_MISMATCH))
+        assertNull(model.onFailure("cdn.example.com/a/b", healthy, FailureCause.LINK_EXPIRED))
     }
 
     @Test
-    fun successAfterFailureDoesNotImmediatelyReexpandLimit() {
+    fun successAfterOneFailureCanReexpand() {
         val healthy = success(prev = null)
         val failed = model.onFailure("cdn.example.com/a/b", healthy, FailureCause.NETWORK_TIMEOUT)!!
         val recovered = success(prev = failed)
 
-        assertEquals(0.21, recovered.failureRate, 1e-9)
-        assertEquals(2, recovered.connectionLimit)
+        assertEquals(0.15, recovered.failureRate, 1e-9)
+        assertEquals(10, recovered.connectionLimit)
     }
 
     @Test

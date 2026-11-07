@@ -15,6 +15,8 @@ enum class FailureCause {
     STORAGE_FULL,
     ROM_KILLED_SERVICE,
     RATE_LIMITED,
+    /** 401/403/签名过期：链接本身失效，不归因于源站质量。 */
+    LINK_EXPIRED,
     BUDGET_EXCEEDED,
     PEER_UNAVAILABLE,
     INCOMPLETE,

@@ -57,11 +57,22 @@ class ChunkThroughputMonitor(
 
     fun rateOf(chunkIndex: Int): Double = states[chunkIndex]?.rate ?: 0.0
 
-    /** 剩余字节仍多于已传字节、且已连续多个窗口低于阈值时才值得拆分。 */
-    fun shouldSplit(chunkIndex: Int, remainingBytes: Long, transferredBytes: Long): Boolean {
-        if (transferredBytes <= 0 || remainingBytes <= transferredBytes) return false
+    /** 连续多个窗口低于阈值，且策略允许时才值得拆分。 */
+    fun shouldSplit(
+        chunkIndex: Int,
+        transferredBytes: Long,
+        chunkLength: Long,
+        connectionLimit: Int
+    ): Boolean {
         val state = states[chunkIndex] ?: return false
-        return state.slowCount >= slowWindows
+        if (state.slowCount < slowWindows) return false
+        return ChunkSplitPolicy.shouldSplit(
+            medianRate = medianRate(),
+            blockRate = state.rate,
+            transferredBytes = transferredBytes,
+            chunkLength = chunkLength,
+            connectionLimit = connectionLimit
+        )
     }
 
     /** 活动块最近窗口速率的中位数；样本少于 3 个返回 null，调用方改用绝对阈值。 */

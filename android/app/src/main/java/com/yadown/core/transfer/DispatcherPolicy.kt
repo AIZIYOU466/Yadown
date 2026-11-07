@@ -9,16 +9,16 @@ package com.yadown.core.transfer
 object DispatcherPolicy {
 
     fun maxRequests(health: Float, storageIops: Int, linkCount: Int = 1): Int {
-        val links = linkCount.coerceIn(1, 2)
+        val dual = linkCount >= 2
         val networkLimit = when {
-            health > 0.7f -> 8 * links
-            health > 0.3f -> 4 * links
-            health > 0.1f -> 1 * links
+            health > 0.7f -> if (dual) 24 else 16
+            health > 0.3f -> if (dual) 12 else 8
+            health > 0.1f -> if (dual) 2 else 2
             else -> 0
         }
         val storageLimit = when {
-            storageIops > 5000 -> 12
-            storageIops > 2000 -> 8
+            storageIops > 5000 -> 32
+            storageIops > 2000 -> 16
             else -> 2
         }
         return minOf(networkLimit, storageLimit)

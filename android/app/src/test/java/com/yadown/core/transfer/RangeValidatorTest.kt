@@ -32,6 +32,22 @@ class RangeValidatorTest {
     }
 
     @Test
+    fun forbiddenIsLinkExpired() {
+        assertInvalid(
+            FailureCause.LINK_EXPIRED,
+            RangeValidator.validate(response(statusCode = 403), request, session)
+        )
+    }
+
+    @Test
+    fun unauthorizedIsLinkExpired() {
+        assertInvalid(
+            FailureCause.LINK_EXPIRED,
+            RangeValidator.validate(response(statusCode = 401), request, session)
+        )
+    }
+
+    @Test
     fun status200_coveringWholeFile_isValid() {
         val result = RangeValidator.validate(
             response(statusCode = 200, contentRange = null, bodyLength = 2048),

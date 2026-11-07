@@ -78,6 +78,14 @@ object RangeValidator {
             return invalid(FailureCause.RATE_LIMITED, "服务器限流，retryAfter=${response.retryAfterMs}")
         }
 
+        // 401/403 通常是签名链接过期或无权限，不是源站变慢；不得写入源健康度。
+        if (response.statusCode == 401 || response.statusCode == 403) {
+            return invalid(
+                FailureCause.LINK_EXPIRED,
+                "HTTP ${response.statusCode}：链接可能已过期或无权限，请重新获取下载地址"
+            )
+        }
+
         if (response.statusCode != 206) {
             return invalid(
                 FailureCause.SERVER_SILENT_REJECTION,

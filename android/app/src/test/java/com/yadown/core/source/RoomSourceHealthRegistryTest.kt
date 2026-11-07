@@ -39,8 +39,8 @@ class RoomSourceHealthRegistryTest {
         val health = registry.get("cdn/a")!!
         assertEquals(1_300.0, health.throughput, 1e-9)
         assertEquals(130.0, health.latencyMs, 1e-9)
-        assertEquals(6, health.connectionLimit)
-        assertEquals(6, registry.getConnectionLimit("cdn/a"))
+        assertEquals(10, health.connectionLimit)
+        assertEquals(10, registry.getConnectionLimit("cdn/a"))
     }
 
     @Test
@@ -50,7 +50,7 @@ class RoomSourceHealthRegistryTest {
 
         val health = registry.get("cdn/a")!!
         assertEquals(0.3, health.failureRate, 1e-9)
-        assertEquals(2, health.connectionLimit)
+        assertEquals("单次失败不降并发", 9, health.connectionLimit)
     }
 
     @Test

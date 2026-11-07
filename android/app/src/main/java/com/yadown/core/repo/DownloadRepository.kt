@@ -28,6 +28,7 @@ import com.yadown.core.source.SourceEndpoint
 import com.yadown.core.source.SourceKind
 import com.yadown.core.source.SourceRoute
 import com.yadown.core.source.SourceRouter
+import com.yadown.core.telemetry.SessionTelemetry
 import com.yadown.core.transfer.BitmapStore
 import com.yadown.core.transfer.ChunkState
 import com.yadown.core.transfer.CompletionVerifier
@@ -244,6 +245,7 @@ class DownloadRepository @Inject constructor(
     /** 下载执行体：前台服务与 WorkManager 两条 Carrier 共用，区别只在谁负责保活。 */
     private suspend fun execute(intentId: String, url: String) {
         val startedAt = System.currentTimeMillis()
+        SessionTelemetry.begin(intentId)
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)
@@ -253,8 +255,8 @@ class DownloadRepository @Inject constructor(
             val descriptor = descriptors[intentId] ?: loadDescriptor(intentId)
             val routes = routesFor(intentId, url)
             val linkCount = routes.mapNotNull { it.linkId }.distinct().size
-            // 单链路 8 连接，双链路 12；由 TransferLimiter 作为进程级上限。
-            val concurrency = if (linkCount >= 2) 12 else 8
+            // 单链路 16 连接，双链路 24；由 TransferLimiter 作为进程级上限。
+            val concurrency = if (linkCount >= 2) 24 else 16
             TransferLimiter.updateGlobalLimit(concurrency)
             engine.download(
                 intentId = intentId,
@@ -329,6 +331,7 @@ class DownloadRepository @Inject constructor(
             progressEmitAt.remove(intentId)
             speedSamples.remove(intentId)
             speeds.update { it - intentId }
+            SessionTelemetry.finish(intentId)
             if (jobs.isEmpty()) stopService()
         }
     }
