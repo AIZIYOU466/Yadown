@@ -233,6 +233,7 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         /** 工厂：20s 无数据视为 stall（与 StallWatchdog 默认一致）。 */
         fun createClient(readTimeoutMs: Long = 20_000): OkHttpClient =
             OkHttpClient.Builder()
+                .eventListener(ConnectionMetrics.listener)
                 .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
                 .build()
     }

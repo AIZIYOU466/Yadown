@@ -143,11 +143,14 @@ object SourceSelection {
     fun pick(
         routes: List<SourceRoute>,
         slot: Int,
-        inFlight: (String) -> Int
+        inFlight: (String) -> Int,
+        available: (SourceRoute) -> Boolean = { true }
     ): SourceRoute {
         require(routes.isNotEmpty()) { "至少需要一个源" }
-        // 已知不可用的源只在没有其它选择时使用，避免按轮转稳定命中坏源。
-        val pool = routes.filter { it.usable }.ifEmpty { routes }
+        // 已知不可用（含熔断）的源只在没有其它选择时使用，留给半开探测。
+        val pool = routes.filter { it.usable && available(it) }
+            .ifEmpty { routes.filter { it.usable } }
+            .ifEmpty { routes }
         val start = Math.floorMod(slot, pool.size)
         for (offset in pool.indices) {
             val candidate = pool[(start + offset) % pool.size]

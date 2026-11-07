@@ -372,6 +372,7 @@ interface SourceRouter {
 - 少于两条可用链路时不聚合，直接走系统默认路由，单链路行为不变。
 - 限流：`TransferLimiter` 键为 `host@linkId`，每链路每主机 4 连接、全局 8；链路失败由 `sourceSlot+1` 换源与 `LinkHealthStore` 熔断（连续 2 次失败冷却 30s）双重处理。
 - 真机验收：双链路吞吐 > 单链路 1.5x；`Network.socketFactory` 对 HTTPS 的绑定效果需 P0.1 真机回填。
+- **性能前提（2026-11 校准）**：单链路若跑不到物理带宽 70%，双链路只是两个低效调度器并行。多链路吞吐验收必须排在单链路事件驱动裂解、OkHttp 连接池治理、I/O 非阻塞化之后，用同设备/同服务器对比。
 
 三条工程假设需在此层验证（见第 8 节）。
 
@@ -408,16 +409,17 @@ fun computeScore(chunk: Chunk, intent: Intent, source: SourceRoute): Float {
 **并发闸门**：
 
 ```kotlin
-fun adjustDispatcher(health: Float, storageIops: Int) {
+fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
+    val links = linkCount.coerceIn(1, 2)
     val networkLimit = when {
-        health > 0.7 -> 6
-        health > 0.3 -> 3
-        health > 0.1 -> 1
+        health > 0.7 -> 6 * links
+        health > 0.3 -> 3 * links
+        health > 0.1 -> 1 * links
         else -> 0
     }
     val storageLimit = when {
-        storageIops > 5000 -> 8
-        storageIops > 2000 -> 4
+        storageIops > 5000 -> 12
+        storageIops > 2000 -> 8
         else -> 2
     }
     dispatcher.maxRequests = min(networkLimit, storageLimit)
@@ -437,6 +439,16 @@ fun adjustDispatcher(health: Float, storageIops: Int) {
 - `416` 校验 `bytes */total` 是否漂移；`429` 读 `Retry-After` 并归因 `RATE_LIMITED`；`Content-Encoding` 非 identity 直接拒绝。
 - 非 Range 源、或中途确认不支持 Range 的任务，下一次重试走 `SequentialDownloader`，按文件长度续传；不能续传时明确从头开始。
 - `If-Range` 目前采用事后 ETag 校验而非请求头；这是效率优化，不改变正确性，后续可加。
+
+**单链路调度与连接治理（P1/P2，2026-11）**：
+
+- 事件驱动裂解：1s 窗口跨活动块中位数，连续 2 个窗口低于 `max(中位数×0.5, 64KB/s)` 即取消当前请求；子块插到队列最前，允许并发临时 +20%（上限 `concurrency/5`），块完成后回落。
+- 自适应粒度：<256KB/s 最小 512KB，中速 1MB，高速 2MB；尾部 64–128KB 允许 64KB 微拆。慢裂解不消耗失败预算，达最小粒度后换源重试并计预算，防止无限拆分。
+- 原子性：`replaceWithChildren` 单事务完成父段失效与子段插入；慢裂解期间父段为 INVALIDATED，不参与完成校验。
+- 限额：全局配额动态（单链路 6、双链路 12），per-key 由 `source_health` 学习值传入；`DynamicLimiter` 等待者排队并在释放/扩容时唤醒。
+- 熔断：10s 窗口失败率 >50% 或连续 3 次失败即熔断；429 按 `Retry-After` 冷却且不裂解；DNS 失败 5s 冷却；冷却后允许半开探测，成功清零。
+- 观测：`TransferTelemetry.stallRate`、`slowSplits`，`ConnectionMetrics.reuseRate`；真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
+- 已知限制：整块读入内存后落盘，慢裂解会丢弃已传字节（≤1MB）；零丢弃需要流式读取+定位写（P3）。
 
 ### 5.4 L4 系统生存层
 

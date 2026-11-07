@@ -36,7 +36,12 @@ import kotlinx.coroutines.withContext
 
 data class DownloadProgress(val downloadedBytes: Long, val totalBytes: Long)
 
-class DownloadException(val failureCause: FailureCause, val detail: String) : Exception(detail)
+class DownloadException(
+    val failureCause: FailureCause,
+    val detail: String,
+    /** 服务端 429 等给出的重试等待，用于熔断冷却而不是盲目重试。 */
+    val retryAfterMs: Long? = null
+) : Exception(detail)
 
 /**
  * 队列驱动的下载引擎，落点：
@@ -53,7 +58,9 @@ class DownloadEngine(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clock: () -> Long = System::currentTimeMillis,
     private val fsyncGate: FsyncGate = FsyncGate(),
-    private val healthRegistry: SourceHealthRegistry? = null
+    private val healthRegistry: SourceHealthRegistry? = null,
+    private val monitor: ChunkThroughputMonitor = ChunkThroughputMonitor(clock),
+    private val breaker: SourceCircuitBreaker = SourceCircuitBreaker(clock)
 ) {
     private data class PendingChunk(
         val chunk: ChunkRange,
@@ -62,6 +69,13 @@ class DownloadEngine(
     )
     private sealed interface Outcome {
         data class Done(val chunk: ChunkRange) : Outcome
+        data class Slow(
+            val chunk: ChunkRange,
+            val rate: Double,
+            val retryCount: Int,
+            val sourceSlot: Int
+        ) : Outcome
+
         data class Failed(
             val chunk: ChunkRange,
             val cause: FailureCause,
@@ -82,6 +96,7 @@ class DownloadEngine(
         concurrency: Int = 4,
         chunkSize: Long = DownloadPlan.DEFAULT_CHUNK_SIZE,
         storageIops: Int = DEFAULT_STORAGE_IOPS,
+        linkCount: Int = 1,
         valueMap: ValueMap? = null,
         availability: AvailabilityContract? = null,
         onProgress: (DownloadProgress) -> Unit = {},
@@ -143,16 +158,21 @@ class DownloadEngine(
         coroutineScope {
             val results = Channel<Outcome>(Channel.UNLIMITED)
             var active = 0
+            // 慢裂解产生的新块允许临时超出并发上限 20%，让快连接多吃；块完成后回落。
+            var splitBonus = 0
+            val maxSplitBonus = maxOf(1, concurrency / 5)
 
             while (pending.isNotEmpty() || active > 0) {
-                val limit = DispatcherPolicy.maxRequests(health.score(), storageIops)
-                    .coerceIn(1, concurrency)
+                val limit = (DispatcherPolicy.maxRequests(health.score(), storageIops, linkCount) + splitBonus)
+                    .coerceAtMost(concurrency + maxSplitBonus)
+                    .coerceAtLeast(1)
                 while (pending.isNotEmpty() && active < limit) {
                     val next = pending.removeFirst()
                     val route = SourceSelection.pick(
                         routes = sourceRoutes,
                         slot = next.chunk.index + next.sourceSlot,
-                        inFlight = ::inFlightOf
+                        inFlight = ::inFlightOf,
+                        available = { candidate -> !breaker.isOpen(candidate.healthKey, clock()) }
                     )
                     inFlight.getValue(route.healthKey).incrementAndGet()
                     active++
@@ -179,6 +199,7 @@ class DownloadEngine(
                                 healthRegistry?.recordSuccess(route.healthKey, throughput, elapsedMs.toDouble())
                             }
                             health.recordSuccess()
+                            breaker.onSuccess(route.healthKey)
                             if (availability != null && readyRanges != null && !availableUnlocked.get()) {
                                 readyRanges.add(next.chunk.start..next.chunk.endInclusive)
                                 if (availability.isAvailable { s, e -> readyRanges.covers(s, e) } &&
@@ -189,11 +210,18 @@ class DownloadEngine(
                                 }
                             }
                             Outcome.Done(next.chunk)
+                        } catch (e: SlowChunkSignal) {
+                            Outcome.Slow(next.chunk, e.rate, next.retryCount, next.sourceSlot)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
                             health.recordFailure()
                             val cause = (e as? DownloadException)?.failureCause ?: FailureCause.UNKNOWN
+                            breaker.onFailure(
+                                route.healthKey,
+                                cause,
+                                (e as? DownloadException)?.retryAfterMs
+                            )
                             runCatching { healthRegistry?.recordFailure(route.healthKey, cause) }
                             TransferTelemetry.onChunkFailed(cause)
                             Outcome.Failed(next.chunk, cause, e.message ?: "", next.retryCount, next.sourceSlot)
@@ -207,9 +235,43 @@ class DownloadEngine(
                 if (active == 0) break
 
                 when (val outcome = results.receive()) {
-                    is Outcome.Done -> active--
+                    is Outcome.Done -> {
+                        active--
+                        monitor.onChunkFinished(outcome.chunk.index)
+                        splitBonus = (splitBonus - 1).coerceAtLeast(0)
+                    }
+                    is Outcome.Slow -> {
+                        active--
+                        monitor.onChunkFinished(outcome.chunk.index)
+                        when (
+                            handleSlowSplit(
+                                intentId = intentId,
+                                chunk = outcome.chunk,
+                                rate = outcome.rate,
+                                retryCount = outcome.retryCount,
+                                sourceSlot = outcome.sourceSlot,
+                                nextIndex = { nextIndex++ },
+                                pending = pending
+                            )
+                        ) {
+                            SlowHandling.Split -> {
+                                splitBonus = (splitBonus + 1).coerceAtMost(maxSplitBonus)
+                            }
+                            SlowHandling.Retry -> Unit
+                            SlowHandling.Exhausted -> {
+                                failedOnce = true
+                                if (firstFailure == null) {
+                                    firstFailure = DownloadException(
+                                        FailureCause.NETWORK_TIMEOUT,
+                                        "慢块重试预算耗尽（速率 ${outcome.rate.toLong()} B/s）"
+                                    )
+                                }
+                            }
+                        }
+                    }
                     is Outcome.Failed -> {
                         active--
+                        monitor.onChunkFinished(outcome.chunk.index)
                         val handled = handleFailed(
                             intentId = intentId,
                             chunk = outcome.chunk,
@@ -383,6 +445,13 @@ class DownloadEngine(
             return false
         }
 
+        // 429 不裂解：裂解只会放大无效请求；按服务端节奏冷却，由断路器换源。
+        if (cause == FailureCause.RATE_LIMITED) {
+            chunkDao.updateState(id, ChunkState.PENDING.name)
+            pending.addLast(PendingChunk(chunk, retryCount + 1, sourceSlot + 1))
+            return true
+        }
+
         // 终态原因不裂解：裂解只会放大无效请求，不会让 403/416/ENOSPC 变可重试。
         if (cause == FailureCause.CONTENT_CHANGED || cause in NO_SPLIT_CAUSES) {
             chunkDao.updateState(id, ChunkState.INVALIDATED.name)
@@ -444,7 +513,7 @@ class DownloadEngine(
         val startedAt = clock()
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
-        val payload = TransferLimiter.withPermit(route.url, route.linkId) {
+        val payload = TransferLimiter.withPermit(route.url, route.linkId, route.connectionLimit) {
             readRangeWithWatchdog(route.url, route.linkId, chunk, startedAt, total)
         }
 
@@ -465,7 +534,7 @@ class DownloadEngine(
                 chunkDao.updateProgress(
                     id, ChunkState.FAILED.name, 0, startedAt, null, null, validation.cause.name
                 )
-                throw DownloadException(validation.cause, validation.detail)
+                throw DownloadException(validation.cause, validation.detail, payload.retryAfterMs)
             }
 
             ValidationResult.Valid -> {
@@ -510,6 +579,8 @@ class DownloadEngine(
             startAtMs = startedAt
         )
         val stalled = AtomicBoolean(false)
+        val splitRequested = AtomicBoolean(false)
+        val received = AtomicLong(0)
         return coroutineScope {
             val work = async(ioDispatcher) {
                 source.readRangeChecked(
@@ -517,7 +588,11 @@ class DownloadEngine(
                     start = chunk.start,
                     endInclusive = chunk.endInclusive,
                     totalSize = totalSize,
-                    onProgress = { _ -> watchdog.onProgress(clock()) },
+                    onProgress = { bytes ->
+                        received.set(bytes)
+                        watchdog.onProgress(clock())
+                        monitor.onProgress(chunk.index, bytes)
+                    },
                     linkId = linkId
                 )
             }
@@ -527,22 +602,89 @@ class DownloadEngine(
                     work.cancel()
                     break
                 }
+                val transferred = received.get()
+                if (monitor.shouldSplit(chunk.index, chunk.length() - transferred, transferred)) {
+                    splitRequested.set(true)
+                    work.cancel()
+                    break
+                }
                 delay(WATCHDOG_POLL_MS)
             }
             try {
                 work.await()
             } catch (e: CancellationException) {
+                if (splitRequested.get()) {
+                    throw SlowChunkSignal(monitor.rateOf(chunk.index))
+                }
                 if (stalled.get()) {
+                    TransferTelemetry.onStall()
                     throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
                 }
                 throw e
             } catch (e: Exception) {
                 if (stalled.get()) {
+                    TransferTelemetry.onStall()
                     throw DownloadException(FailureCause.NETWORK_TIMEOUT, "无进展超过 ${StallWatchdog.DEFAULT_TIMEOUT_MS}ms")
                 }
                 throw e
             }
         }
+    }
+
+    /**
+     * 慢块处理：按实时速率自适应拆分为两个子块，插到队列最前，让空闲 worker 立即接管；
+     * 已达最小粒度时换源重试，并消耗失败重试预算，避免无限拆分。
+     */
+    private suspend fun handleSlowSplit(
+        intentId: String,
+        chunk: ChunkRange,
+        rate: Double,
+        retryCount: Int,
+        sourceSlot: Int,
+        nextIndex: () -> Int,
+        pending: ArrayDeque<PendingChunk>
+    ): SlowHandling {
+        val id = chunkId(intentId, chunk.index)
+        val split = ChunkSplitter.splitAdaptive(chunk.start, chunk.endInclusive, rate)
+        if (split == null) {
+            if (retryCount >= ChunkStateMachine.MAX_RETRIES) {
+                chunkDao.updateState(id, ChunkState.INVALIDATED.name)
+                return SlowHandling.Exhausted
+            }
+            chunkDao.updateState(id, ChunkState.PENDING.name)
+            pending.addFirst(PendingChunk(chunk, retryCount + 1, sourceSlot + 1))
+            return SlowHandling.Retry
+        }
+
+        val indexA = nextIndex()
+        val indexB = nextIndex()
+        val childA = ChunkEntity(
+            id = chunkId(intentId, indexA),
+            intentId = intentId,
+            startByte = split.first.first,
+            endByte = split.first.last,
+            state = ChunkState.PENDING.name,
+            retryCount = 0,
+            checksum = null,
+            connectionFingerprint = null,
+            failureChainJson = null,
+            startedAt = null,
+            completedAt = null
+        )
+        val childB = childA.copy(
+            id = chunkId(intentId, indexB),
+            startByte = split.second.first,
+            endByte = split.second.last
+        )
+        chunkDao.replaceWithChildren(id, childA, childB)
+        pending.addFirst(
+            PendingChunk(ChunkRange(indexA, split.first.first, split.first.last), 0, sourceSlot)
+        )
+        pending.addFirst(
+            PendingChunk(ChunkRange(indexB, split.second.first, split.second.last), 0, sourceSlot)
+        )
+        TransferTelemetry.onSlowSplit()
+        return SlowHandling.Split
     }
 
     /** 非 Range 源的顺序下载：单流落盘，不从内存缓存整个文件；断点续传退化为从头开始。 */
@@ -589,6 +731,14 @@ class DownloadEngine(
     }
 
     private fun chunkId(intentId: String, index: Int): String = "$intentId-$index"
+
+    private sealed interface SlowHandling {
+        data object Split : SlowHandling
+        data object Retry : SlowHandling
+        data object Exhausted : SlowHandling
+    }
+
+    private class SlowChunkSignal(val rate: Double) : Exception("慢块需要裂解")
 
     private fun parseChunkIndex(id: String): Int =
         id.substringAfterLast('-').toIntOrNull() ?: -1

@@ -42,14 +42,20 @@ class DispatcherPolicyTest {
 
     @Test
     fun storageLimitCapsNetwork() {
-        assertEquals(4, DispatcherPolicy.maxRequests(1.0f, 3000))
+        assertEquals(6, DispatcherPolicy.maxRequests(1.0f, 3000))
         assertEquals(2, DispatcherPolicy.maxRequests(1.0f, 1000))
     }
 
     @Test
     fun storageBoundaries() {
-        assertEquals(4, DispatcherPolicy.maxRequests(1.0f, 5000))
+        assertEquals(6, DispatcherPolicy.maxRequests(1.0f, 5000))
         assertEquals(2, DispatcherPolicy.maxRequests(1.0f, 2000))
+    }
+
+    @Test
+    fun dualLinkDoublesNetworkLimit() {
+        assertEquals(12, DispatcherPolicy.maxRequests(1.0f, 6000, linkCount = 2))
+        assertEquals(6, DispatcherPolicy.maxRequests(0.5f, 6000, linkCount = 2))
     }
 
     @Test

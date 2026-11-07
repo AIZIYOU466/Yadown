@@ -106,15 +106,15 @@ class SourceRouterTest {
             health = emptyMap()
         ).map { it.copy(connectionLimit = 1) }
 
-        assertEquals("https://a.example.com/f", SourceSelection.pick(routes, 0) { 0 }.url)
-        assertEquals("https://b.example.com/f", SourceSelection.pick(routes, 1) { 0 }.url)
+        assertEquals("https://a.example.com/f", SourceSelection.pick(routes, 0, { 0 }).url)
+        assertEquals("https://b.example.com/f", SourceSelection.pick(routes, 1, { 0 }).url)
         // a 在途已满：slot 0 跳到 b。
         assertEquals(
             "https://b.example.com/f",
-            SourceSelection.pick(routes, 0) { key -> if (key.contains("a.example.com")) 1 else 0 }.url
+            SourceSelection.pick(routes, 0, { key -> if (key.contains("a.example.com")) 1 else 0 }).url
         )
         // 全部满员时回退到 slot 对应源，避免主循环饿死。
-        assertEquals("https://a.example.com/f", SourceSelection.pick(routes, 0) { 1 }.url)
+        assertEquals("https://a.example.com/f", SourceSelection.pick(routes, 0, { 1 }).url)
     }
 
     @Test
@@ -132,7 +132,7 @@ class SourceRouterTest {
         repeat(4) { slot ->
             assertEquals(
                 "https://good.example.com/f",
-                SourceSelection.pick(routes, slot) { 0 }.url
+                SourceSelection.pick(routes, slot, { 0 }).url
             )
         }
     }

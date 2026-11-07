@@ -58,6 +58,7 @@ class AndroidLinkAggregator(
     override fun bindRequest(link: NetworkLink): OkHttpClient {
         val network = networks[link.id] ?: return baseClient
         return baseClient.newBuilder()
+            .eventListener(ConnectionMetrics.listener)
             .socketFactory(network.socketFactory)
             // 每个链路独立连接池：链路之间不能复用 socket，同链路内仍可复用。
             .connectionPool(ConnectionPool(4, 5, TimeUnit.MINUTES))

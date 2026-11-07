@@ -46,6 +46,12 @@ com.yadown.core.transfer.StallWatchdogTest
 com.yadown.core.transfer.XxHash64Test
 com.yadown.core.transfer.TransferLimiterTest
 com.yadown.core.transfer.DownloadEngineLinkTest
+com.yadown.core.transfer.ChunkThroughputMonitorTest
+com.yadown.core.transfer.ChunkSplitterAdaptiveTest
+com.yadown.core.transfer.DownloadEngineSlowSplitTest
+com.yadown.core.transfer.DynamicLimiterTest
+com.yadown.core.transfer.SourceCircuitBreakerTest
+com.yadown.core.transfer.DownloadEngineCircuitTest
 com.yadown.core.telemetry.TelemetryStoreTest
 com.yadown.core.telemetry.TransferTelemetryTest
 com.yadown.core.survival.FsyncGateTest
@@ -69,6 +75,7 @@ com.yadown.core.peer.PeerDownloadIntegrationTest
 com.yadown.core.net.LinkAllocatorTest
 com.yadown.core.net.LinkHealthStoreTest
 com.yadown.core.net.MultiLinkRangeSourceTest
+com.yadown.core.net.ConnectionMetricsTest
 "
 
 java -cp "$CP" org.junit.runner.JUnitCore $CLASSES

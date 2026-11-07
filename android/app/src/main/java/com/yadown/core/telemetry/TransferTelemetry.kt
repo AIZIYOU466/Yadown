@@ -13,6 +13,8 @@ object TransferTelemetry {
     data class Snapshot(
         val chunksDone: Long,
         val chunksFailed: Long,
+        val stalls: Long,
+        val slowSplits: Long,
         val bytesDone: Long,
         val firstPlayableSamples: Long,
         val firstPlayableTotalMs: Long,
@@ -20,10 +22,18 @@ object TransferTelemetry {
     ) {
         val firstPlayableAvgMs: Long
             get() = if (firstPlayableSamples == 0L) 0L else firstPlayableTotalMs / firstPlayableSamples
+
+        val stallRate: Double
+            get() {
+                val events = chunksDone + chunksFailed + stalls
+                return if (events == 0L) 0.0 else stalls.toDouble() / events
+            }
     }
 
     private val chunksDone = AtomicLong()
     private val chunksFailed = AtomicLong()
+    private val stalls = AtomicLong()
+    private val slowSplits = AtomicLong()
     private val bytesDone = AtomicLong()
     private val firstPlayableSamples = AtomicLong()
     private val firstPlayableTotalMs = AtomicLong()
@@ -48,6 +58,16 @@ object TransferTelemetry {
         store?.append("chunk_failed,${cause.name}")
     }
 
+    fun onStall() {
+        stalls.incrementAndGet()
+        store?.append("stall")
+    }
+
+    fun onSlowSplit() {
+        slowSplits.incrementAndGet()
+        store?.append("slow_split")
+    }
+
     fun onAvailable(elapsedMs: Long) {
         firstPlayableSamples.incrementAndGet()
         firstPlayableTotalMs.addAndGet(elapsedMs.coerceAtLeast(0))
@@ -57,6 +77,8 @@ object TransferTelemetry {
     fun snapshot(): Snapshot = Snapshot(
         chunksDone = chunksDone.get(),
         chunksFailed = chunksFailed.get(),
+        stalls = stalls.get(),
+        slowSplits = slowSplits.get(),
         bytesDone = bytesDone.get(),
         firstPlayableSamples = firstPlayableSamples.get(),
         firstPlayableTotalMs = firstPlayableTotalMs.get(),
@@ -66,6 +88,8 @@ object TransferTelemetry {
     fun reset() {
         chunksDone.set(0)
         chunksFailed.set(0)
+        stalls.set(0)
+        slowSplits.set(0)
         bytesDone.set(0)
         firstPlayableSamples.set(0)
         firstPlayableTotalMs.set(0)

@@ -36,6 +36,7 @@ import com.yadown.core.transfer.DownloadException
 import com.yadown.core.transfer.DownloadPlan
 import com.yadown.core.transfer.IntentState
 import com.yadown.core.transfer.RangeCoverage
+import com.yadown.core.transfer.TransferLimiter
 import com.yadown.core.survival.Carrier
 import com.yadown.core.survival.DeferredSyncWorker
 import com.yadown.core.survival.LifecycleContext
@@ -250,10 +251,16 @@ class DownloadRepository @Inject constructor(
             intentDao.updateState(intentId, IntentState.ACTIVE.name, System.currentTimeMillis())
             val descriptor = descriptors[intentId] ?: loadDescriptor(intentId)
             val routes = routesFor(intentId, url)
+            val linkCount = routes.mapNotNull { it.linkId }.distinct().size
+            // 单链路健康时 6 连接，双链路 12；由 TransferLimiter 作为进程级上限。
+            val concurrency = if (linkCount >= 2) 12 else 6
+            TransferLimiter.updateGlobalLimit(concurrency)
             engine.download(
                 intentId = intentId,
                 url = url,
                 destPath = destPathOf(intentId, url),
+                concurrency = concurrency,
+                linkCount = linkCount.coerceAtLeast(1),
                 valueMap = descriptor?.valueMap,
                 availability = descriptor?.availabilityContract,
                 onProgress = { p ->
