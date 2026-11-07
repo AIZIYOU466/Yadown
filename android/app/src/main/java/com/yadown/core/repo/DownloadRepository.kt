@@ -17,6 +17,7 @@ import com.yadown.core.db.entity.TransferEventEntity
 import com.yadown.core.net.RangeSource
 import com.yadown.core.net.ProbeResult
 import com.yadown.core.io.DownloadPaths
+import com.yadown.core.net.LinkRegistry
 import com.yadown.core.peer.PeerSourceProvider
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
@@ -93,7 +94,8 @@ class DownloadRepository @Inject constructor(
     private val chunkDao: ChunkDao,
     private val eventDao: TransferEventDao,
     private val sourceRouter: SourceRouter,
-    private val peerSourceProvider: PeerSourceProvider
+    private val peerSourceProvider: PeerSourceProvider,
+    private val linkRegistry: LinkRegistry
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -610,9 +612,9 @@ class DownloadRepository @Inject constructor(
     private suspend fun routesFor(intentId: String, url: String): List<SourceRoute> {
         val intent = intentDao.getById(intentId) ?: return emptyList()
         val endpoints = buildList {
-            add(SourceEndpoint(url, SourceKind.ORIGIN))
-            decodeMirrors(intent.mirrorUrlsJson).forEach {
-                add(SourceEndpoint(it, SourceKind.MIRROR))
+            addAll(linkRegistry.endpointsFor(url, SourceKind.ORIGIN))
+            decodeMirrors(intent.mirrorUrlsJson).forEach { mirror ->
+                addAll(linkRegistry.endpointsFor(mirror, SourceKind.MIRROR))
             }
             addAll(peerEndpoints(intent))
         }

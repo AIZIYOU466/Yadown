@@ -444,8 +444,8 @@ class DownloadEngine(
         val startedAt = clock()
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
-        val payload = TransferLimiter.withPermit(route.url) {
-            readRangeWithWatchdog(route.url, chunk, startedAt, total)
+        val payload = TransferLimiter.withPermit(route.url, route.linkId) {
+            readRangeWithWatchdog(route.url, route.linkId, chunk, startedAt, total)
         }
 
         val validation = RangeValidator.validate(
@@ -500,6 +500,7 @@ class DownloadEngine(
      */
     private suspend fun readRangeWithWatchdog(
         url: String,
+        linkId: String?,
         chunk: ChunkRange,
         startedAt: Long,
         totalSize: Long
@@ -511,9 +512,14 @@ class DownloadEngine(
         val stalled = AtomicBoolean(false)
         return coroutineScope {
             val work = async(ioDispatcher) {
-                source.readRangeChecked(url, chunk.start, chunk.endInclusive, totalSize) { _ ->
-                    watchdog.onProgress(clock())
-                }
+                source.readRangeChecked(
+                    url = url,
+                    start = chunk.start,
+                    endInclusive = chunk.endInclusive,
+                    totalSize = totalSize,
+                    onProgress = { _ -> watchdog.onProgress(clock()) },
+                    linkId = linkId
+                )
             }
             while (work.isActive) {
                 if (watchdog.isStalled(clock())) {

@@ -30,17 +30,18 @@ data class SequentialResult(
 )
 
 interface RangeSource {
-    suspend fun probe(url: String): ProbeResult
+    suspend fun probe(url: String, linkId: String? = null): ProbeResult
 
     /**
      * 读取指定 Range。[onProgress] 在收到字节时回调累计字节数（供 stall 检测），
-     * 协程取消时应中断底层请求（可取消）。
+     * 协程取消时应中断底层请求（可取消）。[linkId] 用于多链路路由，普通源忽略。
      */
     suspend fun readRange(
         url: String,
         start: Long,
         endInclusive: Long,
-        onProgress: (Long) -> Unit = {}
+        onProgress: (Long) -> Unit = {},
+        linkId: String? = null
     ): RangePayload
 
     /**
@@ -52,8 +53,9 @@ interface RangeSource {
         start: Long,
         endInclusive: Long,
         totalSize: Long?,
-        onProgress: (Long) -> Unit = {}
-    ): RangePayload = readRange(url, start, endInclusive, onProgress)
+        onProgress: (Long) -> Unit = {},
+        linkId: String? = null
+    ): RangePayload = readRange(url, start, endInclusive, onProgress, linkId)
 
     /**
      * 非 Range 源的顺序读取。默认不支持；实现方负责把字节交给 [onBytes]，

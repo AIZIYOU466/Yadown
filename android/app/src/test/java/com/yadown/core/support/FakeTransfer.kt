@@ -160,14 +160,15 @@ class RoutingRangeSource(
         synchronized(lock) { failuresLeft[url] = (failuresLeft[url] ?: 0) + 1 }
     }
 
-    override suspend fun probe(url: String): ProbeResult =
+    override suspend fun probe(url: String, linkId: String?): ProbeResult =
         ProbeResult(total, true, etag, null, "application/octet-stream")
 
     override suspend fun readRange(
         url: String,
         start: Long,
         endInclusive: Long,
-        onProgress: (Long) -> Unit
+        onProgress: (Long) -> Unit,
+        linkId: String?
     ): RangePayload {
         val shouldFail = synchronized(lock) {
             requested += url to (start..endInclusive)

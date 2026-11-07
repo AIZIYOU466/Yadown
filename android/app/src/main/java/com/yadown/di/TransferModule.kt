@@ -3,6 +3,8 @@ package com.yadown.di
 import android.content.Context
 import com.yadown.core.io.FileStore
 import com.yadown.core.io.RandomAccessFileStore
+import com.yadown.core.net.LinkRegistry
+import com.yadown.core.net.MultiLinkRangeSource
 import com.yadown.core.net.OkHttpRangeSource
 import com.yadown.core.net.RangeSource
 import com.yadown.core.peer.PeerClientRegistry
@@ -36,8 +38,15 @@ object TransferModule {
 
     @Provides
     @Singleton
-    fun provideRangeSource(client: OkHttpClient, peers: PeerClientRegistry): RangeSource =
-        PeerRangeSource(OkHttpRangeSource(client), peers)
+    fun provideRangeSource(
+        client: OkHttpClient,
+        peers: PeerClientRegistry,
+        links: LinkRegistry
+    ): RangeSource = MultiLinkRangeSource(
+        delegate = PeerRangeSource(OkHttpRangeSource(client), peers),
+        linkSources = { linkId -> links.sourceFor(linkId) },
+        health = links.health
+    )
 
     @Provides
     @Singleton

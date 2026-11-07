@@ -197,7 +197,7 @@ class PeerDownloadIntegrationTest {
     var requests = 0
         private set
 
-    override suspend fun probe(url: String) = com.yadown.core.net.ProbeResult(
+    override suspend fun probe(url: String, linkId: String?) = com.yadown.core.net.ProbeResult(
         payload.size.toLong(),
         true,
         "\"v1\"",
@@ -209,16 +209,18 @@ class PeerDownloadIntegrationTest {
         url: String,
         start: Long,
         endInclusive: Long,
-        onProgress: (Long) -> Unit
+        onProgress: (Long) -> Unit,
+        linkId: String?
     ): com.yadown.core.net.RangePayload =
-        readRangeChecked(url, start, endInclusive, null, onProgress)
+        readRangeChecked(url, start, endInclusive, null, onProgress, linkId)
 
     override suspend fun readRangeChecked(
         url: String,
         start: Long,
         endInclusive: Long,
         totalSize: Long?,
-        onProgress: (Long) -> Unit
+        onProgress: (Long) -> Unit,
+        linkId: String?
     ): com.yadown.core.net.RangePayload {
         require(url == expectedUrl) { "意外的主源 URL: $url" }
         requests++

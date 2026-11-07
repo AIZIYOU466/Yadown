@@ -20,7 +20,7 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
      * 用 `Range: bytes=0-0` 探测，而不是 HEAD：部分 CDN 对 HEAD 返回不带 Content-Length，
      * 而 206 + Content-Range 能同时给出「是否支持 Range」和总大小。
      */
-    override suspend fun probe(url: String): ProbeResult = withContext(Dispatchers.IO) {
+    override suspend fun probe(url: String, linkId: String?): ProbeResult = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=0-0")
@@ -46,15 +46,17 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         url: String,
         start: Long,
         endInclusive: Long,
-        onProgress: (Long) -> Unit
-    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress)
+        onProgress: (Long) -> Unit,
+        linkId: String?
+    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress, null)
 
     override suspend fun readRangeChecked(
         url: String,
         start: Long,
         endInclusive: Long,
         totalSize: Long?,
-        onProgress: (Long) -> Unit
+        onProgress: (Long) -> Unit,
+        linkId: String?
     ): RangePayload = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)

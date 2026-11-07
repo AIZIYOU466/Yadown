@@ -150,4 +150,21 @@ class SourceRouterTest {
         assertEquals(1, routes.size)
         assertNotEquals(SourceKind.MIRROR, routes.single().endpoint.kind)
     }
+
+    @Test
+    fun sameUrlOnDifferentLinksIsRankedSeparately() {
+        val url = "https://a.example.com/f"
+        val routes = ranker.rank(
+            listOf(
+                SourceEndpoint(url, linkId = "wifi"),
+                SourceEndpoint(url, linkId = "cellular")
+            ),
+            health = emptyMap()
+        )
+
+        assertEquals(2, routes.size)
+        assertEquals("a.example.com/f|wifi", routes[0].healthKey)
+        assertEquals("a.example.com/f|cellular", routes[1].healthKey)
+        assertNotEquals(routes[0].healthKey, routes[1].healthKey)
+    }
 }

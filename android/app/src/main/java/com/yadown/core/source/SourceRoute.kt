@@ -14,10 +14,13 @@ enum class SourceKind(val localityBonus: Double) {
 data class SourceEndpoint(
     val url: String,
     val kind: SourceKind = SourceKind.ORIGIN,
-    val costPerByte: Double = 0.0
+    val costPerByte: Double = 0.0,
+    /** 绑定链路；null 表示系统默认路由（不聚合）。 */
+    val linkId: String? = null
 ) {
-    /** 域名 + 路径前两级；不含 query，避免签名参数让同一源分裂成无数 key。 */
-    val healthKey: String get() = SourceKey.of(url)
+    /** 域名 + 路径前两级；不含 query，避免签名参数让同一源分裂成无数 key。链路维度单独追加，同一 URL 的不同链路各自学习健康度。 */
+    val healthKey: String
+        get() = SourceKey.of(url) + (linkId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: "")
 }
 
 data class SourceRoute(
@@ -30,6 +33,7 @@ data class SourceRoute(
 ) {
     val healthKey: String get() = endpoint.healthKey
     val url: String get() = endpoint.url
+    val linkId: String? get() = endpoint.linkId
 }
 
 object SourceKey {
@@ -76,7 +80,7 @@ class SourceRanker(private val model: SourceHealthModel = SourceHealthModel()) {
         endpoints: List<SourceEndpoint>,
         health: Map<String, SourceHealth?>
     ): List<SourceRoute> {
-        val unique = endpoints.distinctBy { it.url }
+        val unique = endpoints.distinctBy { it.url to it.linkId }
         val maxThroughput = unique.mapNotNull { health[it.healthKey]?.throughput }
             .maxOrNull()
             ?.coerceAtLeast(1.0) ?: 1.0

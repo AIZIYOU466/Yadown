@@ -32,13 +32,14 @@ class DownloadEngineTest {
         private val etag: String?,
         private val failLengthDelta: Int = 0
     ) : RangeSource {
-        override suspend fun probe(url: String) = ProbeResult(total, true, etag, null, null)
+        override suspend fun probe(url: String, linkId: String?) = ProbeResult(total, true, etag, null, null)
 
         override suspend fun readRange(
             url: String,
             start: Long,
             endInclusive: Long,
-            onProgress: (Long) -> Unit
+            onProgress: (Long) -> Unit,
+            linkId: String?
         ): RangePayload {
             val requested = (endInclusive - start + 1).toInt()
             val len = (requested + failLengthDelta).coerceAtLeast(0)
@@ -57,13 +58,14 @@ class DownloadEngineTest {
     private class FlakySource(private val total: Long, private val etag: String?) : RangeSource {
         private var first = true
 
-        override suspend fun probe(url: String) = ProbeResult(total, true, etag, null, null)
+        override suspend fun probe(url: String, linkId: String?) = ProbeResult(total, true, etag, null, null)
 
         override suspend fun readRange(
             url: String,
             start: Long,
             endInclusive: Long,
-            onProgress: (Long) -> Unit
+            onProgress: (Long) -> Unit,
+            linkId: String?
         ): RangePayload {
             val requested = (endInclusive - start + 1).toInt()
             if (first) {
@@ -88,13 +90,14 @@ class DownloadEngineTest {
     }
 
     private class SequentialSource(private val total: Long) : RangeSource {
-        override suspend fun probe(url: String) = ProbeResult(total, false, null, null, null)
+        override suspend fun probe(url: String, linkId: String?) = ProbeResult(total, false, null, null, null)
 
         override suspend fun readRange(
             url: String,
             start: Long,
             endInclusive: Long,
-            onProgress: (Long) -> Unit
+            onProgress: (Long) -> Unit,
+            linkId: String?
         ): RangePayload = error("非 Range 源不应走 readRange")
 
         override suspend fun readSequential(
@@ -422,13 +425,14 @@ class DownloadEngineTest {
     private class RecordingSource(private val total: Long, private val etag: String?) : RangeSource {
         val requests = mutableListOf<LongRange>()
 
-        override suspend fun probe(url: String) = ProbeResult(total, true, etag, null, null)
+        override suspend fun probe(url: String, linkId: String?) = ProbeResult(total, true, etag, null, null)
 
         override suspend fun readRange(
             url: String,
             start: Long,
             endInclusive: Long,
-            onProgress: (Long) -> Unit
+            onProgress: (Long) -> Unit,
+            linkId: String?
         ): RangePayload {
             synchronized(requests) { requests += start..endInclusive }
             val len = (endInclusive - start + 1).toInt()

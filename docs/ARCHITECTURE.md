@@ -363,6 +363,16 @@ interface SourceRouter {
 - mDNS TXT 只广播设备名、证书指纹与最近 4 个 contentKey（受 key+value < 255 字节限制）；广播的指纹只用于命中信任库，配对短码始终来自实际 TLS 握手。
 - 服务端限制：单请求区间 ≤2MiB、单连接 15s、全局 8 连接、keep-alive ≤32 请求；contentId 只用于查共享白名单，不拼入文件路径。
 
+**T4.5 实现口径（2026-11，真机绑定待 P0.1 回填）**：
+
+- 链路作为 `SourceEndpoint` 的维度：`linkId` 非空表示绑定该网络；`healthKey` 追加 `|linkId`，同一 URL 的不同链路各自学习健康度与连接上限。
+- `SourceRanker` 按 `(url, linkId)` 去重；`SourceSelection` 的槽位轮转把分块分散到多条链路。
+- 绑定：`Network.socketFactory` 绑定 raw socket，TLS 在其上建立；每条链路用独立 OkHttpClient 与连接池，不调用 `bindProcessToNetwork`。
+- 准入：只用 INTERNET + VALIDATED 链路；私网/`.local`/单标签主机只允许 Wi-Fi/以太网；计费链路需用户允许（默认允许，UI 提示流量）。
+- 少于两条可用链路时不聚合，直接走系统默认路由，单链路行为不变。
+- 限流：`TransferLimiter` 键为 `host@linkId`，每链路每主机 4 连接、全局 8；链路失败由 `sourceSlot+1` 换源与 `LinkHealthStore` 熔断（连续 2 次失败冷却 30s）双重处理。
+- 真机验收：双链路吞吐 > 单链路 1.5x；`Network.socketFactory` 对 HTTPS 的绑定效果需 P0.1 真机回填。
+
 三条工程假设需在此层验证（见第 8 节）。
 
 ### 5.3 L3 传输收敛层

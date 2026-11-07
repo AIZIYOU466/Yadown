@@ -19,28 +19,30 @@ class PeerRangeSource(
     private val peers: PeerClientRegistry
 ) : RangeSource {
 
-    override suspend fun probe(url: String): ProbeResult =
-        peers.sourceFor(url)?.probe(url) ?: delegate.probe(url)
+    override suspend fun probe(url: String, linkId: String?): ProbeResult =
+        peers.sourceFor(url)?.probe(url) ?: delegate.probe(url, linkId)
 
     override suspend fun readRange(
         url: String,
         start: Long,
         endInclusive: Long,
-        onProgress: (Long) -> Unit
-    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress)
+        onProgress: (Long) -> Unit,
+        linkId: String?
+    ): RangePayload = readRangeChecked(url, start, endInclusive, null, onProgress, linkId)
 
     override suspend fun readRangeChecked(
         url: String,
         start: Long,
         endInclusive: Long,
         totalSize: Long?,
-        onProgress: (Long) -> Unit
+        onProgress: (Long) -> Unit,
+        linkId: String?
     ): RangePayload {
         val peer = peers.sourceFor(url)
         val payload = if (peer == null) {
-            delegate.readRangeChecked(url, start, endInclusive, totalSize, onProgress)
+            delegate.readRangeChecked(url, start, endInclusive, totalSize, onProgress, linkId)
         } else {
-            peer.readRangeChecked(url, start, endInclusive, totalSize, onProgress)
+            peer.readRangeChecked(url, start, endInclusive, totalSize, onProgress, null)
         }
         if (peer != null) PeerChunkVerifier.verify(payload)
         return payload
