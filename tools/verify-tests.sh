@@ -67,6 +67,7 @@ com.yadown.core.net.TopologyRangeSourceTest
 com.yadown.core.net.Http1TopologyTest
 com.yadown.core.net.TopologyConcurrencyTest
 com.yadown.core.net.MultiConnectionThroughputTest
+com.yadown.core.net.WarmupTest
 com.yadown.core.survival.FsyncGateTest
 com.yadown.core.survival.LifecycleManagerTest
 com.yadown.core.survival.BatteryGuidanceTest

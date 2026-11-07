@@ -67,4 +67,10 @@ interface RangeSource {
         onProgress: (Long) -> Unit,
         onBytes: (ByteArray) -> Unit
     ): SequentialResult = throw UnsupportedOperationException("该源不支持顺序读取")
+
+    /**
+     * 预热连接：正式下载前并发建立最多 [connections] 条连接，减少首批块请求的握手等待。
+     * 默认不做任何事；预热失败必须静默，不能阻断下载。
+     */
+    suspend fun warmup(url: String, totalSize: Long?, connections: Int) {}
 }

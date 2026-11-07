@@ -110,4 +110,7 @@ class TopologyRangeSource(
         TransportTopology.MULTI_CONNECTION -> multi
         TransportTopology.AUTO -> reuse
     }
+
+    override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
+        current(totalSize).warmup(url, totalSize, connections)
 }

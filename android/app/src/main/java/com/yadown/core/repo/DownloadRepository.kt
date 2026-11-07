@@ -288,6 +288,10 @@ class DownloadRepository @Inject constructor(
                 multiLimit = plannedMultiLimit
             )
             TransferLimiter.updateGlobalLimit(concurrency)
+            // 多连接拓扑下先预热连接，减少首批块的 TCP+TLS 握手等待；失败不影响下载。
+            if (effectiveTopology == TransportTopology.MULTI_CONNECTION) {
+                runCatching { source.warmup(url, intentSize, plannedMultiLimit) }
+            }
             engine.download(
                 intentId = intentId,
                 url = url,
@@ -328,7 +332,8 @@ class DownloadRepository @Inject constructor(
                 routes = routes
             )
             completedIntents.add(intentId)
-            runCatching { publishCompleted(intentId, url) }
+            // 公共目录发布要拷贝整个文件（100MB 时 1–3s），放后台不阻塞 COMPLETED 感知。
+            scope.launch { runCatching { publishCompleted(intentId, url) } }
             runCatching { notifyCompleted(intentId, url) }
             recordEvent(
                 intentId = intentId,

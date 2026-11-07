@@ -6,6 +6,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import com.yadown.core.transfer.DownloadException
@@ -238,6 +240,29 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
     private fun parseTotalSize(contentRange: String?): Long? {
         val match = CONTENT_RANGE.matchEntire(contentRange?.trim() ?: return null) ?: return null
         return match.groupValues[3].toLongOrNull()
+    }
+
+    override suspend fun warmup(url: String, totalSize: Long?, connections: Int) {
+        if (connections <= 1) return
+        coroutineScope {
+            repeat(connections) {
+                launch(Dispatchers.IO) {
+                    runCatching {
+                        val request = Request.Builder()
+                            .url(url)
+                            .header("Range", "bytes=0-0")
+                            .header("Accept-Encoding", "identity")
+                            .build()
+                        client.newCall(request).executeSuspend().use { response ->
+                            // 读完 1 字节，让连接归还连接池；预热失败不影响下载。
+                            if (response.code == 200 || response.code == 206) {
+                                response.body?.bytes()
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun parseRetryAfter(value: String?): Long? {

@@ -69,6 +69,9 @@ class MultiLinkRangeSource(
         onBytes: (ByteArray) -> Unit
     ): SequentialResult = delegate.readSequential(url, start, onProgress, onBytes)
 
+    override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
+        delegate.warmup(url, totalSize, connections)
+
     private fun sourceOrNull(linkId: String?): RangeSource? =
         linkOrNull(linkId)?.let(linkSources)
 

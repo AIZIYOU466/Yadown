@@ -54,6 +54,9 @@ class PeerRangeSource(
         onProgress: (Long) -> Unit,
         onBytes: (ByteArray) -> Unit
     ): SequentialResult = delegate.readSequential(url, start, onProgress, onBytes)
+
+    override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
+        delegate.warmup(url, totalSize, connections)
 }
 
 object PeerChunkVerifier {
