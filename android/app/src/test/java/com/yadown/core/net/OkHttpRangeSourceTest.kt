@@ -1,5 +1,6 @@
 package com.yadown.core.net
 
+import com.yadown.core.transfer.DownloadException
 import com.yadown.core.transfer.FailureCause
 import com.yadown.core.transfer.RangeRequest
 import com.yadown.core.transfer.RangeResponse
@@ -157,6 +158,18 @@ class OkHttpRangeSourceTest {
     private fun assertInvalid(expected: FailureCause, result: ValidationResult) {
         assertTrue("expected Invalid, got $result", result is ValidationResult.Invalid)
         assertEquals(expected, (result as ValidationResult.Invalid).cause)
+    }
+
+    @Test
+    fun probe403IsLinkExpired() = runBlocking {
+        val server = serve {
+            HttpResponse(403, mapOf("Content-Type" to "text/html"), bytes(431))
+        }
+
+        val error = runCatching { source.probe(server.baseUrl) }.exceptionOrNull()
+
+        assertTrue("expected DownloadException, got $error", error is DownloadException)
+        assertEquals(FailureCause.LINK_EXPIRED, (error as DownloadException).failureCause)
     }
 
     @Test

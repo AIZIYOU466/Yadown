@@ -8,6 +8,8 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import com.yadown.core.transfer.DownloadException
+import com.yadown.core.transfer.FailureCause
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -27,6 +29,23 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
             .header("Accept-Encoding", "identity")
             .build()
         client.newCall(request).executeSuspend().use { response ->
+            // 403/401 是签名链接过期，不能把错误页的 Content-Length 当成文件大小。
+            when (response.code) {
+                200, 206 -> Unit
+                401, 403 -> throw DownloadException(
+                    FailureCause.LINK_EXPIRED,
+                    "HTTP ${response.code}：链接可能已过期或无权限，请重新获取下载地址"
+                )
+                429 -> throw DownloadException(
+                    FailureCause.RATE_LIMITED,
+                    "服务器限流，请稍后重试",
+                    parseRetryAfter(response.header("Retry-After"))
+                )
+                else -> throw DownloadException(
+                    FailureCause.SERVER_SILENT_REJECTION,
+                    "探测失败：HTTP ${response.code}"
+                )
+            }
             val contentRange = response.header("Content-Range")
             val totalFromRange = parseTotalSize(contentRange)
             // `bytes 0-0/*` 表示总大小未知；此时不能退回 Content-Length（那是 1 字节）。
