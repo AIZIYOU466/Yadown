@@ -66,7 +66,7 @@ class CrashRecoveryTest {
     }
 
     @Test
-    fun dbDoneWriteFailureRetriesAndEventuallyCompletes() = runTest {
+    fun dbDoneWriteFailureIsRetriedWithoutRedownload() = runTest {
         val total = 16L
         var failedOnce = false
         val source = RoutingRangeSource(total)
@@ -89,7 +89,8 @@ class CrashRecoveryTest {
 
         assertEquals((0 until total).map { it.toByte() }, file.readBytes().toList())
         assertEquals(IntentState.COMPLETED.name, intentDao.getById("i1")!!.state)
-        assertTrue("失败分块必须重试", source.requests.count { it.second.first == 0L } >= 2)
+        // 数据已落盘，批量提交失败只需重试 DB，不重下分块。
+        assertEquals(4, source.requests.size)
     }
 
     @Test

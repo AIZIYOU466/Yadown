@@ -60,7 +60,8 @@ class DownloadEngine(
     private val fsyncGate: FsyncGate = FsyncGate(),
     private val healthRegistry: SourceHealthRegistry? = null,
     private val monitor: ChunkThroughputMonitor = ChunkThroughputMonitor(clock),
-    private val breaker: SourceCircuitBreaker = SourceCircuitBreaker(clock)
+    private val breaker: SourceCircuitBreaker = SourceCircuitBreaker(clock),
+    private val pipeline: WritePipeline = WritePipeline()
 ) {
     private data class PendingChunk(
         val chunk: ChunkRange,
@@ -129,6 +130,16 @@ class DownloadEngine(
         // 位图是索引而非提交记录，写失败不能阻断下载；DB 仍是 DONE 的权威。
         runCatching { bitmaps.save(intentId, bitmap, fingerprint) }
         val session = RangeSession(intent.etag, intent.lastModified, total)
+        val coordinator = CommitCoordinator(
+            intentId = intentId,
+            chunkDao = chunkDao,
+            bitmaps = bitmaps,
+            bitmap = bitmap,
+            fingerprint = fingerprint,
+            pipeline = pipeline,
+            fsyncGate = fsyncGate,
+            clock = clock
+        )
         val pending = buildPending(plan, dbChunks, valueMap)
         val completed = AtomicLong(dbChunks.filter { it.state == ChunkState.DONE.name }
             .sumOf { it.endByte - it.startByte + 1 })
@@ -186,10 +197,10 @@ class DownloadEngine(
                                 chunk = next.chunk,
                                 session = session,
                                 bitmap = bitmap,
-                                fingerprint = fingerprint,
                                 bitmapMutex = bitmapMutex,
                                 completed = completed,
                                 total = total,
+                                coordinator = coordinator,
                                 onProgress = onProgress,
                                 onChunkDone = onChunkDone
                             )
@@ -299,6 +310,16 @@ class DownloadEngine(
             }
             intentDao.updateState(intentId, IntentState.FAILED.name, clock())
             throw firstFailure ?: DownloadException(FailureCause.UNKNOWN, "下载失败")
+        }
+
+        try {
+            pipeline.flush()
+            coordinator.commit(force = true)
+        } catch (e: Exception) {
+            throw DownloadException(
+                FailureCause.STORAGE_UNREACHABLE,
+                "写盘/提交失败: ${e.message}"
+            )
         }
 
         val finalChunks = chunkDao.getByIntent(intentId)
@@ -502,10 +523,10 @@ class DownloadEngine(
         chunk: ChunkRange,
         session: RangeSession,
         bitmap: ChunkBitmap,
-        fingerprint: String,
         bitmapMutex: Mutex,
         completed: AtomicLong,
         total: Long,
+        coordinator: CommitCoordinator,
         onProgress: (DownloadProgress) -> Unit,
         onChunkDone: (ChunkRange) -> Unit
     ) {
@@ -539,23 +560,23 @@ class DownloadEngine(
 
             ValidationResult.Valid -> {
                 val checksum = XxHash64.hash(payload.bytes)
-                files.withFile(destPath) { raf ->
-                    raf.seek(chunk.start)
-                    raf.write(payload.bytes)
-                    // DONE 之前数据必须已持久；先保证正确性，后续再做分组提交优化。
-                    raf.fd.sync()
-                    fsyncGate.markFsynced(clock())
-                }
+                // 传输协程只投递写任务；数据落盘与 DB DONE 由协调器按周期成批完成。
+                pipeline.submit(WritePipeline.WriteTask(destPath, chunk.start, payload.bytes))
                 bitmapMutex.withLock {
                     // 裂解产生的子 chunk index 超出原始位图，完成状态由 DB 记录。
                     if (chunk.index < bitmap.totalChunks) {
                         bitmap.markDone(chunk.index)
-                        // 位图是索引而非提交记录：写失败不能把已落盘的数据判为失败，
-                        // 重开任务时会按 DB 的 DONE 集合重建位图。
-                        runCatching { bitmaps.save(intentId, bitmap, fingerprint) }
                     }
                 }
-                chunkDao.updateProgress(id, ChunkState.DONE.name, 0, startedAt, clock(), checksum, null)
+                coordinator.enqueue(
+                    CommitCoordinator.DoneRecord(
+                        id = id,
+                        startedAt = startedAt,
+                        completedAt = clock(),
+                        checksum = checksum
+                    )
+                )
+                coordinator.commit(force = false)
                 TransferTelemetry.onChunkDone(chunk.length())
                 onProgress(DownloadProgress(completed.addAndGet(chunk.length()), total))
                 onChunkDone(chunk)

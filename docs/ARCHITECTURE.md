@@ -450,6 +450,15 @@ fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
 - 观测：`TransferTelemetry.stallRate`、`slowSplits`，`ConnectionMetrics.reuseRate`；真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
 - 已知限制：整块读入内存后落盘，慢裂解会丢弃已传字节（≤1MB）；零丢弃需要流式读取+定位写（P3）。
 
+**I/O 非阻塞化（P3，2026-11）**：
+
+- 传输协程只提交写任务（有界队列 16 块，背压），不执行磁盘系统调用；单写线程用 `FileChannel.write(buffer, position)` 定位写，支持乱序块。
+- 提交协调器每 2s（`FsyncGate`）或下载结束时：`pipeline.flush()`（等待写完 + `force(true)`）→ 批量写 DB DONE → 批量保存位图。不变式：**DB 中 DONE 的块，其字节已持久化**。
+- 掉电：未提交块 DB 仍为 RUNNING/PENDING，重启后重下；文件完整但 DB 未提交时不判完成。提交失败只重试 DB，不重下已落盘数据。
+- 播放器 `DownloadingDataSource` 用 `RangeReadySignal` 条件变量唤醒，替代固定 150ms 轮询；超时仍兜底。
+- **Direct I/O 不实现**：Java/`FileChannel` 无 O_DIRECT API，且 O_DIRECT 要求缓冲区地址/长度对齐，纯 JVM 无法保证；需要 native（NDK/JNI）+ inline encryption 探测，当前工程不具备，不做伪实现。
+- 真机待回填：传输线程磁盘等待占比 <5%、掉电恢复分块校验通过率 >99.9%、首播时间不因批量 fsync 退化。
+
 ### 5.4 L4 系统生存层
 
 ```kotlin

@@ -36,6 +36,7 @@ import com.yadown.core.transfer.DownloadException
 import com.yadown.core.transfer.DownloadPlan
 import com.yadown.core.transfer.IntentState
 import com.yadown.core.transfer.RangeCoverage
+import com.yadown.core.transfer.RangeReadySignal
 import com.yadown.core.transfer.TransferLimiter
 import com.yadown.core.survival.Carrier
 import com.yadown.core.survival.DeferredSyncWorker
@@ -289,6 +290,8 @@ class DownloadRepository @Inject constructor(
                 onChunkDone = { chunk ->
                     coverages.computeIfAbsent(intentId) { RangeCoverage() }
                         .add(chunk.start..chunk.endInclusive)
+                    // 播放器可能在等待该区间，立即唤醒，避免固定 150ms 轮询。
+                    RangeReadySignal.signal()
                 },
                 routes = routes
             )

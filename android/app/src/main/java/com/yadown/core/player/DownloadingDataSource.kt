@@ -6,6 +6,7 @@ import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import com.yadown.core.transfer.RangeReadySignal
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
@@ -50,7 +51,8 @@ class DownloadingDataSource(
             if (SystemClock.elapsedRealtime() - waitStartedAtMs > MAX_WAIT_MS) {
                 throw IOException("等待下载超时，任务可能已暂停或失败")
             }
-            Thread.sleep(POLL_INTERVAL_MS)
+            // 下载完成一块会 signal，立即唤醒；超时只是兜底。
+            RangeReadySignal.await(POLL_INTERVAL_MS)
         }
         RandomAccessFile(file, "r").use { raf ->
             raf.seek(position)

@@ -52,6 +52,10 @@ com.yadown.core.transfer.DownloadEngineSlowSplitTest
 com.yadown.core.transfer.DynamicLimiterTest
 com.yadown.core.transfer.SourceCircuitBreakerTest
 com.yadown.core.transfer.DownloadEngineCircuitTest
+com.yadown.core.transfer.WritePipelineTest
+com.yadown.core.transfer.CommitCoordinatorTest
+com.yadown.core.transfer.RangeReadySignalTest
+com.yadown.core.transfer.AsyncPersistenceRecoveryTest
 com.yadown.core.telemetry.TelemetryStoreTest
 com.yadown.core.telemetry.TransferTelemetryTest
 com.yadown.core.survival.FsyncGateTest
