@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -112,6 +113,30 @@ fun LinkAggregationDialog(
                         checked = state.multiConnection,
                         onCheckedChange = viewModel::setMultiConnection
                     )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("多连接数", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "MULTI_CONNECTION 下的 TCP 并发，默认 16；调低可减少握手与耗电，" +
+                                "用于找出吞吐最优点。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.semanticColors.subtleText
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    listOf(4, 6, 8, 12, 16).forEach { limit ->
+                        FilterChip(
+                            selected = state.multiConnectionLimit == limit,
+                            onClick = { viewModel.setMultiConnectionLimit(limit) },
+                            label = { Text("$limit") }
+                        )
+                    }
                 }
             }
         },

@@ -19,6 +19,7 @@ import com.yadown.core.net.ProbeResult
 import com.yadown.core.io.DownloadPaths
 import com.yadown.core.net.LinkRegistry
 import com.yadown.core.net.TransportTopologySettings
+import com.yadown.core.net.TopologyConcurrency
 import com.yadown.core.peer.PeerSourceProvider
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
@@ -248,7 +249,13 @@ class DownloadRepository @Inject constructor(
     private suspend fun execute(intentId: String, url: String) {
         val startedAt = System.currentTimeMillis()
         val intentSize = intentDao.getById(intentId)?.totalSize
-        SessionTelemetry.begin(intentId, topologySettings.resolve(intentSize).name)
+        val effectiveTopology = topologySettings.resolve(intentSize)
+        val sessionBudget = TopologyConcurrency.concurrencyFor(
+            linkCount = 1,
+            topology = effectiveTopology,
+            multiLimit = topologySettings.multiConnectionLimit
+        )
+        SessionTelemetry.begin(intentId, effectiveTopology.name, sessionBudget)
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)
@@ -258,8 +265,12 @@ class DownloadRepository @Inject constructor(
             val descriptor = descriptors[intentId] ?: loadDescriptor(intentId)
             val routes = routesFor(intentId, url)
             val linkCount = routes.mapNotNull { it.linkId }.distinct().size
-            // 单链路 16 连接，双链路 24；由 TransferLimiter 作为进程级上限。
-            val concurrency = if (linkCount >= 2) 24 else 16
+            // 单链路 16、双链路 24；MULTI_CONNECTION 用可配置连接数（默认 16）。
+            val concurrency = TopologyConcurrency.concurrencyFor(
+                linkCount = linkCount,
+                topology = effectiveTopology,
+                multiLimit = topologySettings.multiConnectionLimit
+            )
             TransferLimiter.updateGlobalLimit(concurrency)
             engine.download(
                 intentId = intentId,

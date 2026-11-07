@@ -34,6 +34,15 @@ class TransportTopologySettings(context: Context) {
             prefs.edit().putString(KEY_TOPOLOGY, value.name).apply()
         }
 
+    /** MULTI_CONNECTION 下的 TCP 并发数；用于找出握手成本与叠加吞吐的交叉点。 */
+    var multiConnectionLimit: Int
+        get() = prefs.getInt(KEY_MULTI_LIMIT, DEFAULT_MULTI_LIMIT)
+        set(value) {
+            prefs.edit()
+                .putInt(KEY_MULTI_LIMIT, value.coerceIn(TopologyConcurrency.MIN_MULTI_LIMIT, TopologyConcurrency.MAX_MULTI_LIMIT))
+                .apply()
+        }
+
     /** 把 [AUTO] 按总大小展开成具体拓扑；未知大小时保守走单连接。 */
     fun resolve(totalSize: Long?): TransportTopology = when (topology) {
         TransportTopology.AUTO ->
@@ -47,6 +56,8 @@ class TransportTopologySettings(context: Context) {
 
     private companion object {
         const val KEY_TOPOLOGY = "topology"
+        const val KEY_MULTI_LIMIT = "multi_connection_limit"
+        const val DEFAULT_MULTI_LIMIT = 16
         const val AUTO_MULTI_THRESHOLD_BYTES = 8L * 1024 * 1024
     }
 }

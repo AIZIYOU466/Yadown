@@ -58,8 +58,8 @@ fun DiagnosticsDialog(
                         "峰值并发 ${session.peakConcurrentRequests} · 新建连接 ${session.connectStarts}",
                         style = MaterialTheme.typography.bodySmall
                     )
-                    Text(
-                        "传输拓扑 ${session.topology.ifEmpty { "未标注" }}",
+                    Text("传输拓扑 ${session.topology.ifEmpty { "未标注" }}" +
+                        if (session.connectionBudget > 0) " · 并发预算 ${session.connectionBudget}" else "",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(

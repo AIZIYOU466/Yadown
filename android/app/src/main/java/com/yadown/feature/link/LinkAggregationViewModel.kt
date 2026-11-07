@@ -28,6 +28,7 @@ class LinkAggregationViewModel @Inject constructor(
         val enabled: Boolean,
         val allowMetered: Boolean,
         val multiConnection: Boolean,
+        val multiConnectionLimit: Int,
         val links: List<NetworkLink>
     )
 
@@ -36,6 +37,7 @@ class LinkAggregationViewModel @Inject constructor(
             enabled = settings.enabled,
             allowMetered = settings.allowMetered,
             multiConnection = topologySettings.topology == TransportTopology.MULTI_CONNECTION,
+            multiConnectionLimit = topologySettings.multiConnectionLimit,
             links = emptyList()
         )
     )
@@ -65,6 +67,12 @@ class LinkAggregationViewModel @Inject constructor(
             TransportTopology.REUSE
         }
         _state.update { it.copy(multiConnection = enabled) }
+    }
+
+    /** 多连接数：只影响 MULTI_CONNECTION，用于找出握手成本与叠加吞吐的交叉点。 */
+    fun setMultiConnectionLimit(limit: Int) {
+        topologySettings.multiConnectionLimit = limit
+        _state.update { it.copy(multiConnectionLimit = topologySettings.multiConnectionLimit) }
     }
 
     fun refreshLinks() {
