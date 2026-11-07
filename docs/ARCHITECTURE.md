@@ -448,7 +448,9 @@ fun adjustDispatcher(health: Float, storageIops: Int, linkCount: Int = 1) {
 - 限额：全局配额动态（单链路 16、双链路 24），per-key 由 `source_health` 学习值传入（默认 8、上限 16、下限 2，失败迟滞）；OkHttp `Dispatcher` 显式设为 64/32，消除默认每主机 5 的隐藏上限。
 - 健康度：连接上限默认 8、上限 16、下限 2；单次失败不降并发，连续 3 次或 10s 窗口失败率 >50% 才减半；成功后失败率快速衰减（×0.5）并逐次扩容。401/403 归因 `LINK_EXPIRED`，不写入源健康度且不重试膨胀。健康键对 GitHub release assets 纳入第三段文件 UUID，避免同 repo 不同文件共享一次坏链接的惩罚。
 - 熔断：10s 窗口失败率 >50% 或连续 3 次失败即熔断；429 按 `Retry-After` 冷却且不裂解；DNS 失败 5s 冷却；冷却后允许半开探测，成功清零。
-- 观测：`TransferTelemetry` 进程累计 + `SessionTelemetry` 按 intent 的会话统计（完成/失败/字节/重试/stall/慢裂解）；debug 构建顶栏「诊断」分栏展示。真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
+- 观测：`TransferTelemetry` 进程累计 + `SessionTelemetry` 按 intent 的会话统计（完成/失败/字节/重试/stall/慢裂解/耗时/平均速度/峰值并发/本任务新建连接）；debug 构建顶栏「诊断」分栏展示。真机回填 P95/stall/复用率/429 率，容器内只验证逻辑。
+- 文件名：`DownloadPaths.fileNameOf` 优先解析签名 URL 的 `response-content-disposition`/`rscd` 中的 `filename=`，再回退 path 最后一段，并过滤路径分隔符与控制字符；任务卡/通知/存储均使用真实文件名。
+- 拓扑观察（2026-11-07）：两次 44.6MB 下载速度无差异、进程累计 `connect 1`，说明连接复用/TLS 握手不是瓶颈，稳态受单 TCP 连接带宽约束；H2 把 8–16 个请求压成一条连接上的流。下一步用连接池分片或 H1 多连接做 A/B，以会话级 `connectStarts`/峰值并发/平均速度判定，不用进程累计值。
 - 已知限制：整块读入内存后落盘；慢裂解仍会丢弃已传字节，但已限制为块内 <25% 且低速/单连接不裂解；零丢弃需要流式读取+部分提交（后续）。
 
 **I/O 非阻塞化（P3，2026-11）**：

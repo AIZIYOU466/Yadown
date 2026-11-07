@@ -51,6 +51,14 @@ fun DiagnosticsDialog(
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
+                        "耗时 ${formatDuration(session.elapsedMs)} · 平均 ${formatSpeed(session.avgBytesPerSec)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        "峰值并发 ${session.peakConcurrentRequests} · 新建连接 ${session.connectStarts}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
                         if (session.finishedAt == null) "进行中" else "已结束",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.semanticColors.subtleText
@@ -126,3 +134,15 @@ fun DiagnosticsDialog(
 
 private fun percent(value: Double): String =
     String.format(Locale.US, "%.1f%%", value * 100.0)
+
+private fun formatSpeed(bytesPerSec: Double): String =
+    if (bytesPerSec >= 1024 * 1024) {
+        String.format(Locale.US, "%.2f MB/s", bytesPerSec / (1024 * 1024))
+    } else {
+        String.format(Locale.US, "%.0f KB/s", bytesPerSec / 1024)
+    }
+
+private fun formatDuration(ms: Long): String {
+    val seconds = ms / 1000
+    return if (seconds >= 60) "${seconds / 60}m${seconds % 60}s" else "${seconds}s"
+}

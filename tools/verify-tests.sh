@@ -60,6 +60,7 @@ com.yadown.core.transfer.AsyncPersistenceRecoveryTest
 com.yadown.core.telemetry.TelemetryStoreTest
 com.yadown.core.telemetry.TransferTelemetryTest
 com.yadown.core.telemetry.SessionTelemetryTest
+com.yadown.core.io.DownloadPathsTest
 com.yadown.core.survival.FsyncGateTest
 com.yadown.core.survival.LifecycleManagerTest
 com.yadown.core.survival.BatteryGuidanceTest

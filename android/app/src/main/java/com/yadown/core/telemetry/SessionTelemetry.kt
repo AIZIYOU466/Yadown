@@ -1,5 +1,6 @@
 package com.yadown.core.telemetry
 
+import com.yadown.core.net.ConnectionMetrics
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -17,8 +18,17 @@ object SessionTelemetry {
         var retries: Long = 0,
         var stalls: Long = 0,
         var slowSplits: Long = 0,
+        var peakConcurrentRequests: Int = 0,
+        var connectStarts: Long = 0,
+        var connectBaseline: Long = 0,
         var finishedAt: Long? = null
-    )
+    ) {
+        val elapsedMs: Long
+            get() = ((finishedAt ?: System.currentTimeMillis()) - startedAt).coerceAtLeast(1)
+
+        val avgBytesPerSec: Double
+            get() = bytesDone * 1000.0 / elapsedMs
+    }
 
     private val lock = Any()
     private val sessions = ConcurrentHashMap<String, Session>()
@@ -28,7 +38,11 @@ object SessionTelemetry {
 
     fun begin(intentId: String) {
         synchronized(lock) {
-            sessions[intentId] = Session(intentId, System.currentTimeMillis())
+            sessions[intentId] = Session(
+                intentId = intentId,
+                startedAt = System.currentTimeMillis(),
+                connectBaseline = ConnectionMetrics.snapshot().connectStarts
+            )
         }
     }
 
@@ -65,10 +79,23 @@ object SessionTelemetry {
         }
     }
 
+    fun onPeakConcurrency(intentId: String, concurrent: Int) {
+        synchronized(lock) {
+            sessions[intentId]?.let { session ->
+                if (concurrent > session.peakConcurrentRequests) {
+                    session.peakConcurrentRequests = concurrent
+                }
+            }
+        }
+    }
+
     fun finish(intentId: String): Session? {
         synchronized(lock) {
             val session = sessions.remove(intentId) ?: return null
             session.finishedAt = System.currentTimeMillis()
+            session.connectStarts = (
+                ConnectionMetrics.snapshot().connectStarts - session.connectBaseline
+                ).coerceAtLeast(0)
             lastFinished = session
             return session
         }

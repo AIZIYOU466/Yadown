@@ -187,6 +187,10 @@ class DownloadEngine(
                         available = { candidate -> !breaker.isOpen(candidate.healthKey, clock()) }
                     )
                     inFlight.getValue(route.healthKey).incrementAndGet()
+                    SessionTelemetry.onPeakConcurrency(
+                        intentId,
+                        inFlight.values.sumOf { it.get() }
+                    )
                     active++
                     launch {
                         val outcome = try {
