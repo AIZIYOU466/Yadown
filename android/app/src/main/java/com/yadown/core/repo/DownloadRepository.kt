@@ -214,7 +214,11 @@ class DownloadRepository @Inject constructor(
         runCatching {
             val dest = File(destPathOf(id, url))
             dest.parentFile?.mkdirs()
-            RandomAccessFile(dest, "rw").use { it.setLength(total) }
+            RandomAccessFile(dest, "rw").use {
+                it.setLength(total)
+                // 预分配的长度元数据必须立即落盘，否则后续周期提交的 force(false) 不能保证重启后长度正确。
+                it.fd.sync()
+            }
         }
 
         start(id, url)

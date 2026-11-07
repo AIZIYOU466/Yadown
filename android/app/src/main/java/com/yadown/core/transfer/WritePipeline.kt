@@ -73,8 +73,14 @@ class WritePipeline(
         }
     }
 
-    /** 等待已提交任务写完并 fdatasync；有失败时抛出，由调用方归因存储错误。 */
-    fun flush() {
+    /**
+     * 等待已提交任务写完并落盘；有失败时抛出，由调用方归因存储错误。
+     *
+     * [syncMetadata] = false 时只 `force(false)`（只保证数据，不强制文件大小等元数据），
+     * 用于周期提交；文件长度已在下载开始前预分配并 `sync`，最终完成时仍用
+     * [syncMetadata] = true，因此「DB DONE 的块字节已持久化」不变式保持。
+     */
+    fun flush(syncMetadata: Boolean = true) {
         lock.withLock {
             while (pending > 0) {
                 idle.await(100, TimeUnit.MILLISECONDS)
@@ -82,7 +88,7 @@ class WritePipeline(
             }
         }
         failure?.let { throw it }
-        channels.values.forEach { it.force(true) }
+        channels.values.forEach { it.force(syncMetadata) }
         failure?.let { throw it }
     }
 

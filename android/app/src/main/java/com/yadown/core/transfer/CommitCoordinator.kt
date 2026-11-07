@@ -51,7 +51,8 @@ class CommitCoordinator(
 
         if (batch.isNotEmpty() || force) {
             try {
-                pipeline.flush()
+                // 周期提交只保证数据落盘（文件长度已预分配并 sync），最终提交才强制元数据。
+                pipeline.flush(syncMetadata = force)
             } catch (t: Throwable) {
                 synchronized(lock) { pending.addAll(batch) }
                 if (force) throw t

@@ -140,7 +140,8 @@
 | 单链路调度优化（P1/P2） | 已完成（容器级 + 单测，真机指标待回填） | 事件驱动慢块裂解（`ChunkSplitPolicy`：全局 <64KB/s 不裂解、已传 <25%、per-key≥2）；动态全局限额（单链路 16 / 双链路 24）、per-key 默认 8/上限 16/下限 2；OkHttp per-host 32；健康度迟滞；401/403 归因 LINK_EXPIRED（probe 不再把错误页当文件）；会话级连接/并发/速度观测；签名 URL 真实文件名解析 |
 | 能力解锁基准（新增） | 已落地（容器） | `CapabilityBenchmarkTest`（含 warmup、内存覆盖 TTFP）+ `TestHttpServer` 限速/RTT + `tools/benchmark.sh`；20MB/4MBps 聚合 4.87s，2MB/4MBps 0.32s。 |
 | 固定开销修复 | 已落地（容器） | `readRangeWithWatchdog` 500ms 轮询量化 → `withTimeoutOrNull` 即时返回；4MB/s 2MB 总耗时 1028→324ms。 |
+| fsync 语义优化 | 已落地（容器） | `WritePipeline.flush(syncMetadata)`；周期提交 `force(false)`、最终 `force(true)`；预分配后 `fd.sync()` 保证长度元数据；20MB 基准 4.86s。 |
 | 传输拓扑优化（P4 前置） | 已验证（容器 + 真机 A/B） | Azure Blob 8 次：REUSE 中位 13s/1.69MB/s，MULTI 16 中位 7s/2.97MB/s（~1.76x）；GitHub 预算 A/B（3/2/3 次）：8 → 中位 8s/2.69MB/s（3 条 TCP，复用 67–72%）、12 → 18.5s/1.28、16 → 16s/1.37。默认 `AUTO`（≥8MB MULTI），多连接默认 **8**（4/6/8/12/16 可调）；新增每 host 连接数学习（`HostTuningStore`，8/12/16 探索后选 EWMA 最优，诊断页可见）；容器 371 全绿。两 CDN 甜点不同，靠 host 学习适配。|
 | I/O 非阻塞化（P3） | 已完成（容器级 + 单测，真机指标待回填） | 异步写盘管线（有界队列 + FileChannel 定位写）、2s 批量 fsync/DB DONE/位图提交（DB DONE ≤ 持久化字节）、RangeReadySignal 唤醒播放器 DataSource；Direct I/O 因缺少 native/对齐能力不实现 |
 
-*ROADMAP 版本：v2.5 — 2026-11-07*
+*ROADMAP 版本：v2.6 — 2026-11-07*
