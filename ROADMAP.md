@@ -141,8 +141,9 @@
 | 能力解锁基准（新增） | 已落地（容器） | `CapabilityBenchmarkTest`（含 warmup、内存覆盖 TTFP）+ `TestHttpServer` 限速/RTT + `tools/benchmark.sh`；20MB/4MBps 聚合 4.87s，2MB/4MBps 0.32s。 |
 | 固定开销修复 | 已落地（容器） | `readRangeWithWatchdog` 500ms 轮询量化 → `withTimeoutOrNull` 即时返回；4MB/s 2MB 总耗时 1028→324ms。 |
 | fsync 语义优化 | 已落地（容器） | `WritePipeline.flush(syncMetadata)`；周期提交 `force(false)`、最终 `force(true)`；预分配后 `fd.sync()` 保证长度元数据；20MB 基准 4.86s。 |
-| 发布异步 + 连接预热 | 已落地（容器） | `publishCompleted` 后台 launch 不阻塞完成；`RangeSource.warmup` 在 MULTI 下预热 N 条连接（`WarmupTest` 验证 4 条）；块大小自适应暂缓（需持久化 chunkSize，风险 > 收益）。 |
+| 发布异步 + 连接预热 | 已落地（容器） | `publishCompleted` 后台 launch 不阻塞完成；`RangeSource.warmup` 在 MULTI 下预热 N 条连接（`WarmupTest` 验证多条 TCP）；块大小自适应暂缓（需持久化 chunkSize，风险 > 收益）。 |
+| 进度与阶段遥测 | 已落地（容器） | 块内字节进度 200ms 上报（进度条不再静止）；`firstChunkAtMs`/`flushMs`/`verifyMs` 进诊断页；`recordEvent` 后台化；`resetConnections()` 任务开始重建连接池。 |
 | 传输拓扑优化（P4 前置） | 已验证（容器 + 真机 A/B） | Azure Blob 8 次：REUSE 中位 13s/1.69MB/s，MULTI 16 中位 7s/2.97MB/s（~1.76x）；GitHub 预算 A/B（3/2/3 次）：8 → 中位 8s/2.69MB/s（3 条 TCP，复用 67–72%）、12 → 18.5s/1.28、16 → 16s/1.37。默认 `AUTO`（≥8MB MULTI），多连接默认 **8**（4/6/8/12/16 可调）；新增每 host 连接数学习（`HostTuningStore`，8/12/16 探索后选 EWMA 最优，诊断页可见）；容器 371 全绿。两 CDN 甜点不同，靠 host 学习适配。|
 | I/O 非阻塞化（P3） | 已完成（容器级 + 单测，真机指标待回填） | 异步写盘管线（有界队列 + FileChannel 定位写）、2s 批量 fsync/DB DONE/位图提交（DB DONE ≤ 持久化字节）、RangeReadySignal 唤醒播放器 DataSource；Direct I/O 因缺少 native/对齐能力不实现 |
 
-*ROADMAP 版本：v2.7 — 2026-11-07*
+*ROADMAP 版本：v2.8 — 2026-11-07*

@@ -72,6 +72,8 @@ class MultiLinkRangeSource(
     override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
         delegate.warmup(url, totalSize, connections)
 
+    override fun resetConnections() = delegate.resetConnections()
+
     private fun sourceOrNull(linkId: String?): RangeSource? =
         linkOrNull(linkId)?.let(linkSources)
 

@@ -218,6 +218,7 @@ class DownloadEngine(
                             health.recordSuccess()
                             breaker.onSuccess(route.healthKey)
                             SessionTelemetry.onChunkDone(intentId, next.chunk.length())
+                            SessionTelemetry.onFirstChunk(intentId, clock() - sessionStartedAt)
                             if (availability != null && readyRanges != null && !availableUnlocked.get()) {
                                 readyRanges.add(next.chunk.start..next.chunk.endInclusive)
                                 if (availability.isAvailable { s, e -> readyRanges.covers(s, e) } &&
@@ -320,6 +321,7 @@ class DownloadEngine(
             throw firstFailure ?: DownloadException(FailureCause.UNKNOWN, "下载失败")
         }
 
+        val flushStartedAt = clock()
         try {
             pipeline.flush()
             coordinator.commit(force = true)
@@ -329,10 +331,13 @@ class DownloadEngine(
                 "写盘/提交失败: ${e.message}"
             )
         }
+        SessionTelemetry.onFlush(intentId, clock() - flushStartedAt)
 
         val finalChunks = chunkDao.getByIntent(intentId)
         val fileLength = File(destPath).length()
+        val verifyStartedAt = clock()
         val report = CompletionVerifier.verify(total, finalChunks, fileLength)
+        SessionTelemetry.onVerify(intentId, clock() - verifyStartedAt)
         if (!report.complete) {
             markIncompleteForRepair(intentId, total, fileLength, report)
             intentDao.updateState(intentId, IntentState.FAILED.name, clock())
@@ -546,7 +551,18 @@ class DownloadEngine(
         chunkDao.updateProgress(id, ChunkState.RUNNING.name, 0, startedAt, null, null, null)
 
         val payload = TransferLimiter.withPermit(route.url, route.linkId, route.connectionLimit) {
-            readRangeWithWatchdog(intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total)
+            val lastEmitAt = java.util.concurrent.atomic.AtomicLong(0)
+            readRangeWithWatchdog(
+                intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total,
+                onBytesProgress = { bytes ->
+                    // 块内字节进度上报：进度条不再只在块完成时跳一次，慢块期间也能看到推进。
+                    val now = clock()
+                    if (now - lastEmitAt.get() >= PROGRESS_EMIT_MS) {
+                        lastEmitAt.set(now)
+                        onProgress(DownloadProgress(completed.get() + bytes, total))
+                    }
+                }
+            )
         }
 
         val validation = RangeValidator.validate(
@@ -606,7 +622,8 @@ class DownloadEngine(
         connectionLimit: Int,
         chunk: ChunkRange,
         startedAt: Long,
-        totalSize: Long
+        totalSize: Long,
+        onBytesProgress: (Long) -> Unit = {}
     ): RangePayload {
         // 低并发/慢源放宽 stall：慢边缘节点上 20s 就取消会把接近完成的请求反复掐断。
         val stallTimeoutMs = if (connectionLimit <= 2) {
@@ -632,6 +649,7 @@ class DownloadEngine(
                         received.set(bytes)
                         watchdog.onProgress(clock())
                         monitor.onProgress(chunk.index, bytes)
+                        onBytesProgress(bytes)
                     },
                     linkId = linkId
                 )
@@ -807,6 +825,7 @@ class DownloadEngine(
 
     companion object {
         private const val WATCHDOG_POLL_MS = 500L
+        private const val PROGRESS_EMIT_MS = 200L
         private const val SLOW_SOURCE_STALL_TIMEOUT_MS = 45_000L
         private const val DEFAULT_STORAGE_IOPS = 3_000
         private val NO_SPLIT_CAUSES = setOf(

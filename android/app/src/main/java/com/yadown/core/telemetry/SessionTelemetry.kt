@@ -25,6 +25,12 @@ object SessionTelemetry {
         var peakConcurrentRequests: Int = 0,
         var connectStarts: Long = 0,
         var connectBaseline: Long = 0,
+        /** 首块完成距会话开始的毫秒数（起步延迟）。 */
+        var firstChunkAtMs: Long? = null,
+        /** 结束前 flush + 最终提交（fsync）耗时。 */
+        var flushMs: Long? = null,
+        /** 完成校验耗时。 */
+        var verifyMs: Long? = null,
         var finishedAt: Long? = null
     ) {
         val elapsedMs: Long
@@ -92,6 +98,26 @@ object SessionTelemetry {
                     session.peakConcurrentRequests = concurrent
                 }
             }
+        }
+    }
+
+    fun onFirstChunk(intentId: String, elapsedMs: Long) {
+        synchronized(lock) {
+            sessions[intentId]?.let { session ->
+                if (session.firstChunkAtMs == null) session.firstChunkAtMs = elapsedMs.coerceAtLeast(0)
+            }
+        }
+    }
+
+    fun onFlush(intentId: String, elapsedMs: Long) {
+        synchronized(lock) {
+            sessions[intentId]?.let { it.flushMs = elapsedMs.coerceAtLeast(0) }
+        }
+    }
+
+    fun onVerify(intentId: String, elapsedMs: Long) {
+        synchronized(lock) {
+            sessions[intentId]?.let { it.verifyMs = elapsedMs.coerceAtLeast(0) }
         }
     }
 

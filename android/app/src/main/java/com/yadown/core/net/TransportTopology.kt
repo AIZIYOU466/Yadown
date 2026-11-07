@@ -75,7 +75,8 @@ class TopologyRangeSource(
     private val resolve: (Long?) -> TransportTopology = { topology() }
 ) : RangeSource {
 
-    private val multi by lazy(multiConnection)
+    private val multiDelegate = lazy(multiConnection)
+    private val multi: RangeSource get() = multiDelegate.value
 
     override suspend fun probe(url: String, linkId: String?): ProbeResult =
         current(null).probe(url, linkId)
@@ -113,4 +114,9 @@ class TopologyRangeSource(
 
     override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
         current(totalSize).warmup(url, totalSize, connections)
+
+    override fun resetConnections() {
+        reuse.resetConnections()
+        if (multiDelegate.isInitialized()) multiDelegate.value.resetConnections()
+    }
 }

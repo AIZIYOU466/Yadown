@@ -265,6 +265,10 @@ class OkHttpRangeSource(private val client: OkHttpClient) : RangeSource {
         }
     }
 
+    override fun resetConnections() {
+        client.connectionPool.evictAll()
+    }
+
     private fun parseRetryAfter(value: String?): Long? {
         val seconds = value?.trim()?.toLongOrNull() ?: return null
         return (seconds * 1000).coerceAtLeast(0)

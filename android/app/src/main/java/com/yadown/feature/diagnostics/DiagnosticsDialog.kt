@@ -58,6 +58,14 @@ fun DiagnosticsDialog(
                         "峰值并发 ${session.peakConcurrentRequests} · 新建连接 ${session.connectStarts}",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    Text(
+                        buildString {
+                            append("首块 ${session.firstChunkAtMs?.let { "${it}ms" } ?: "-"}")
+                            append(" · 落盘提交 ${session.flushMs?.let { "${it}ms" } ?: "-"}")
+                            append(" · 完成校验 ${session.verifyMs?.let { "${it}ms" } ?: "-"}")
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Text("传输拓扑 ${session.topology.ifEmpty { "未标注" }}" +
                         if (session.connectionBudget > 0) " · 并发预算 ${session.connectionBudget}" else "",
                         style = MaterialTheme.typography.bodySmall

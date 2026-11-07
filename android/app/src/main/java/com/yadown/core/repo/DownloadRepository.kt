@@ -288,8 +288,10 @@ class DownloadRepository @Inject constructor(
                 multiLimit = plannedMultiLimit
             )
             TransferLimiter.updateGlobalLimit(concurrency)
-            // 多连接拓扑下先预热连接，减少首批块的 TCP+TLS 握手等待；失败不影响下载。
+            // 多连接拓扑下先重建连接并预热，避免复用跨任务劣化的旧连接；
+            // 多任务并发时共享连接池，清空会打断其他任务，故只在单任务时重置。
             if (effectiveTopology == TransportTopology.MULTI_CONNECTION) {
+                if (jobs.size <= 1) source.resetConnections()
                 runCatching { source.warmup(url, intentSize, plannedMultiLimit) }
             }
             engine.download(
@@ -335,13 +337,11 @@ class DownloadRepository @Inject constructor(
             // 公共目录发布要拷贝整个文件（100MB 时 1–3s），放后台不阻塞 COMPLETED 感知。
             scope.launch { runCatching { publishCompleted(intentId, url) } }
             runCatching { notifyCompleted(intentId, url) }
-            recordEvent(
-                intentId = intentId,
-                event = "COMPLETED",
-                cause = null,
-                bytes = fileOf(intentId, url).length(),
-                startedAt = startedAt
-            )
+            val completedBytes = fileOf(intentId, url).length()
+            // 事件写 DB 也放后台，避免 finally 前阻塞会话结束感知。
+            scope.launch {
+                runCatching { recordEvent(intentId, "COMPLETED", null, completedBytes, startedAt) }
+            }
         } catch (e: CancellationException) {
             intentDao.updateState(intentId, IntentState.PAUSED.name, System.currentTimeMillis())
             recordEvent(

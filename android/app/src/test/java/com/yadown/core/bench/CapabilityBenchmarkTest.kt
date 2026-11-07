@@ -15,6 +15,7 @@ import com.yadown.core.transfer.ChunkRange
 import com.yadown.core.transfer.DownloadEngine
 import com.yadown.core.transfer.IntentState
 import com.yadown.core.transfer.RangeCoverage
+import com.yadown.core.telemetry.SessionTelemetry
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -117,6 +118,7 @@ class CapabilityBenchmarkTest {
             val file = tmp.newFile()
 
             val startedAt = System.nanoTime()
+            SessionTelemetry.begin("bench", "MULTI_CONNECTION", concurrency)
             val keyReadyAt = AtomicLong(0)
             val coveredBytes = AtomicLong(0)
             val keyCoverage = RangeCoverage()
@@ -160,6 +162,7 @@ class CapabilityBenchmarkTest {
 
             val totalMs = (System.nanoTime() - startedAt) / 1_000_000
             val ttfpMs = if (keyReadyAt.get() > 0) keyReadyAt.get() else totalMs
+            val session = SessionTelemetry.finish("bench")
             assertEquals(IntentState.COMPLETED.name, intentDao.getById("bench")!!.state)
             assertEquals(totalBytes, file.length())
 
@@ -169,6 +172,9 @@ class CapabilityBenchmarkTest {
                 latencyMs = latencyMs,
                 ttfpMs = ttfpMs,
                 totalMs = totalMs,
+                firstChunkMs = session?.firstChunkAtMs ?: -1,
+                flushMs = session?.flushMs ?: -1,
+                verifyMs = session?.verifyMs ?: -1,
                 requests = server.requests.size,
                 connectionCount = server.connectionCount,
                 completed = true
@@ -188,7 +194,9 @@ class CapabilityBenchmarkTest {
         results.forEachIndexed { index, r ->
             append("    {\"name\": \"${r.name}\", \"bytesPerSec\": ${r.bytesPerSec}, ")
             append("\"latencyMs\": ${r.latencyMs}, \"ttfpMs\": ${r.ttfpMs}, ")
-            append("\"totalMs\": ${r.totalMs}, \"requests\": ${r.requests}, ")
+            append("\"totalMs\": ${r.totalMs}, \"firstChunkMs\": ${r.firstChunkMs}, ")
+            append("\"flushMs\": ${r.flushMs}, \"verifyMs\": ${r.verifyMs}, ")
+            append("\"requests\": ${r.requests}, ")
             append("\"connections\": ${r.connectionCount}, \"completed\": ${r.completed}}")
             if (index != results.lastIndex) append(",")
             append("\n")
@@ -202,6 +210,9 @@ class CapabilityBenchmarkTest {
         val latencyMs: Long,
         val ttfpMs: Long,
         val totalMs: Long,
+        val firstChunkMs: Long,
+        val flushMs: Long,
+        val verifyMs: Long,
         val requests: Int,
         val connectionCount: Int,
         val completed: Boolean

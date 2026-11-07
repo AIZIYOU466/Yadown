@@ -57,6 +57,8 @@ class PeerRangeSource(
 
     override suspend fun warmup(url: String, totalSize: Long?, connections: Int) =
         delegate.warmup(url, totalSize, connections)
+
+    override fun resetConnections() = delegate.resetConnections()
 }
 
 object PeerChunkVerifier {
