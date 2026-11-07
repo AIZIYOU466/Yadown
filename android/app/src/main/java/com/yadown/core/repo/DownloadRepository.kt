@@ -20,6 +20,7 @@ import com.yadown.core.io.DownloadPaths
 import com.yadown.core.net.LinkRegistry
 import com.yadown.core.net.TransportTopologySettings
 import com.yadown.core.net.TopologyConcurrency
+import com.yadown.core.net.TransportTopology
 import com.yadown.core.peer.PeerSourceProvider
 import com.yadown.core.semantic.AvailabilityContract
 import com.yadown.core.semantic.ContentDescriptor
@@ -30,6 +31,8 @@ import com.yadown.core.source.SourceEndpoint
 import com.yadown.core.source.SourceKind
 import com.yadown.core.source.SourceRoute
 import com.yadown.core.source.SourceRouter
+import com.yadown.core.source.HostTuning
+import com.yadown.core.source.HostTuningStore
 import com.yadown.core.telemetry.SessionTelemetry
 import com.yadown.core.transfer.BitmapStore
 import com.yadown.core.transfer.ChunkState
@@ -101,7 +104,8 @@ class DownloadRepository @Inject constructor(
     private val sourceRouter: SourceRouter,
     private val peerSourceProvider: PeerSourceProvider,
     private val linkRegistry: LinkRegistry,
-    private val topologySettings: TransportTopologySettings
+    private val topologySettings: TransportTopologySettings,
+    private val hostTuning: HostTuningStore
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -250,10 +254,18 @@ class DownloadRepository @Inject constructor(
         val startedAt = System.currentTimeMillis()
         val intentSize = intentDao.getById(intentId)?.totalSize
         val effectiveTopology = topologySettings.resolve(intentSize)
+        val host = HostTuning.hostOf(url)
+        // 同 host 已学到更优连接数时优先用它；否则用手动档/默认档。
+        val learnedLimit = if (effectiveTopology == TransportTopology.MULTI_CONNECTION && host != null) {
+            hostTuning.chooseLimit(host, LEARNABLE_LIMITS)
+        } else {
+            null
+        }
+        val plannedMultiLimit = learnedLimit ?: topologySettings.multiConnectionLimit
         val sessionBudget = TopologyConcurrency.concurrencyFor(
             linkCount = 1,
             topology = effectiveTopology,
-            multiLimit = topologySettings.multiConnectionLimit
+            multiLimit = plannedMultiLimit
         )
         SessionTelemetry.begin(intentId, effectiveTopology.name, sessionBudget)
         try {
@@ -269,7 +281,7 @@ class DownloadRepository @Inject constructor(
             val concurrency = TopologyConcurrency.concurrencyFor(
                 linkCount = linkCount,
                 topology = effectiveTopology,
-                multiLimit = topologySettings.multiConnectionLimit
+                multiLimit = plannedMultiLimit
             )
             TransferLimiter.updateGlobalLimit(concurrency)
             engine.download(
@@ -345,7 +357,14 @@ class DownloadRepository @Inject constructor(
             progressEmitAt.remove(intentId)
             speedSamples.remove(intentId)
             speeds.update { it - intentId }
-            SessionTelemetry.finish(intentId)
+            val session = SessionTelemetry.finish(intentId)
+            // 只在无失败、有实际字节的会话上学习连接数，避免把网络故障当档位差异。
+            if (session != null && host != null &&
+                effectiveTopology == TransportTopology.MULTI_CONNECTION &&
+                session.chunksFailed == 0L && session.bytesDone > 0
+            ) {
+                hostTuning.record(host, session.connectionBudget, session.avgBytesPerSec)
+            }
             if (jobs.isEmpty()) stopService()
         }
     }
@@ -720,5 +739,7 @@ class DownloadRepository @Inject constructor(
         val json = Json { ignoreUnknownKeys = true }
         const val PROGRESS_INTERVAL_MS = 200L
         const val PEER_LOOKUP_TIMEOUT_MS = 2_000L
+        /** 可学习的连接数档位：4/6 并行过少，优先在 8/12/16 中找甜点。 */
+        val LEARNABLE_LIMITS = listOf(8, 12, 16)
     }
 }

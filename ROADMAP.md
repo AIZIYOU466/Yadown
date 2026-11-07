@@ -138,7 +138,7 @@
 | P4 多源协同层 | T4.1/T4.4/T4.2/T4.3 已完成；T4.5 功能骨架完成，性能待前置优化后回填 | T4.1 SourceHealthRegistry / T4.4 源站+镜像路由 / T4.2 mDNS 发现端 / T4.3 peer TLS 传输 / T4.5 多链路骨架；**性能验收前置**：单链路事件驱动裂解、连接池治理、I/O 非阻塞化 |
 | P5 集成真机验证 | 自动化部分完成（P5.1/P5.2）；真机项未开始 | 端到端 mock server 与断点恢复测试已入单测；首播/掉电/弱网/ROM/媒体库/边下边播清单待真机回填 |
 | 单链路调度优化（P1/P2） | 已完成（容器级 + 单测，真机指标待回填） | 事件驱动慢块裂解（`ChunkSplitPolicy`：全局 <64KB/s 不裂解、已传 <25%、per-key≥2）；动态全局限额（单链路 16 / 双链路 24）、per-key 默认 8/上限 16/下限 2；OkHttp per-host 32；健康度迟滞；401/403 归因 LINK_EXPIRED（probe 不再把错误页当文件）；会话级连接/并发/速度观测；签名 URL 真实文件名解析 |
-| 传输拓扑优化（P4 前置） | 已验证（容器 + 真机 A/B） | 同一 22.4MB Azure Blob 8 次 A/B：REUSE 中位 13s/1.69MB/s，MULTI 中位 7s/2.97MB/s（~1.76x）；默认 `AUTO`（总大小 ≥8MB 走 MULTI_CONNECTION，小文件/未知大小 REUSE）；多连接数可配 4/6/8/12/16（默认 16），由 `TopologyConcurrency` 统一计算并发预算；诊断页显示拓扑+并发预算；容器内每连接限速 server 验证 4>2 连接吞吐 |
+| 传输拓扑优化（P4 前置） | 已验证（容器 + 真机 A/B） | Azure Blob 8 次：REUSE 中位 13s/1.69MB/s，MULTI 16 中位 7s/2.97MB/s（~1.76x）；GitHub 预算 A/B（3/2/3 次）：8 → 中位 8s/2.69MB/s（3 条 TCP，复用 67–72%）、12 → 18.5s/1.28、16 → 16s/1.37。默认 `AUTO`（≥8MB MULTI），多连接默认 **8**（4/6/8/12/16 可调）；新增每 host 连接数学习（`HostTuningStore`，8/12/16 探索后选 EWMA 最优，诊断页可见）；容器 371 全绿。两 CDN 甜点不同，靠 host 学习适配。|
 | I/O 非阻塞化（P3） | 已完成（容器级 + 单测，真机指标待回填） | 异步写盘管线（有界队列 + FileChannel 定位写）、2s 批量 fsync/DB DONE/位图提交（DB DONE ≤ 持久化字节）、RangeReadySignal 唤醒播放器 DataSource；Direct I/O 因缺少 native/对齐能力不实现 |
 
-*ROADMAP 版本：v2.1 — 2026-11-07*
+*ROADMAP 版本：v2.3 — 2026-11-07*

@@ -57,7 +57,7 @@ class TransportTopologySettings(context: Context) {
     private companion object {
         const val KEY_TOPOLOGY = "topology"
         const val KEY_MULTI_LIMIT = "multi_connection_limit"
-        const val DEFAULT_MULTI_LIMIT = 16
+        const val DEFAULT_MULTI_LIMIT = 8
         const val AUTO_MULTI_THRESHOLD_BYTES = 8L * 1024 * 1024
     }
 }

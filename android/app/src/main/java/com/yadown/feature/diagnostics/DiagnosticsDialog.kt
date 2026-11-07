@@ -75,6 +75,15 @@ fun DiagnosticsDialog(
 
                 HorizontalDivider()
 
+                if (state.hostTuning.isNotEmpty()) {
+                    Text("连接数学习（每 host）", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        state.hostTuning,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    HorizontalDivider()
+                }
+
                 Text("进程累计（含历史）", style = MaterialTheme.typography.titleSmall)
                 state.telemetry?.let { telemetry ->
                     Text(

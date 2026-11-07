@@ -122,7 +122,7 @@ fun LinkAggregationDialog(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("多连接数", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "MULTI_CONNECTION 下的 TCP 并发，默认 16；调低可减少握手与耗电，" +
+                            "MULTI_CONNECTION 下的 TCP 并发，默认 8；调低可减少握手与耗电，" +
                                 "用于找出吞吐最优点。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.semanticColors.subtleText

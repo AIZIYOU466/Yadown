@@ -7,6 +7,7 @@ import com.yadown.core.net.LinkAggregator
 import com.yadown.core.net.LinkHealthStore
 import com.yadown.core.net.LinkRegistry
 import com.yadown.core.net.TransportTopologySettings
+import com.yadown.core.source.HostTuningStore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -30,6 +31,12 @@ object LinkModule {
     fun provideTransportTopologySettings(
         @ApplicationContext context: Context
     ): TransportTopologySettings = TransportTopologySettings(context)
+
+    @Provides
+    @Singleton
+    fun provideHostTuningStore(
+        @ApplicationContext context: Context
+    ): HostTuningStore = HostTuningStore(context)
 
     @Provides
     @Singleton
