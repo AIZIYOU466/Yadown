@@ -268,15 +268,9 @@ class DownloadRepository @Inject constructor(
             null
         }
         val plannedMultiLimit = learnedLimit ?: topologySettings.multiConnectionLimit
-        if (effectiveTopology == TransportTopology.MULTI_CONNECTION) {
+        if (effectiveTopology == TransportTopology.MULTI_CONNECTION && jobs.size <= 1) {
             // 多任务并发时共享连接池，清空会打断其他任务，故只在单任务时重置。
-            if (jobs.size <= 1) source.resetConnections()
-            // 有上限地等预热：常见情况下 N 条 TCP+TLS 在 2 RTT 内建好，首波直接复用，
-            // 总连接数恰为预算；超时就取消在飞握手再开跑，既不留半成品连接，
-            // 也不像旧实现那样无上限阻塞在首块之前。
-            withTimeoutOrNull(WARMUP_DEADLINE_MS) {
-                runCatching { source.warmup(url, intentSize, plannedMultiLimit) }
-            }
+            source.resetConnections()
         }
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
@@ -761,8 +755,6 @@ class DownloadRepository @Inject constructor(
         val json = Json { ignoreUnknownKeys = true }
         const val PROGRESS_INTERVAL_MS = 200L
         const val PEER_LOOKUP_TIMEOUT_MS = 2_000L
-        /** 预热的等待上限：足够 2 RTT 建完 N 条连接，又不至于把首块拖成旧的 1.3s 级开销。 */
-        const val WARMUP_DEADLINE_MS = 350L
         /** 可学习的连接数档位：4/6 并行过少，优先在 8/12/16 中找甜点。 */
         val LEARNABLE_LIMITS = listOf(8, 12, 16)
     }

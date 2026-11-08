@@ -47,10 +47,14 @@ object SessionTelemetry {
         val avgBytesPerSec: Double
             get() = bytesDone * 1000.0 / elapsedMs
 
-        /** 传输窗口内的吞吐：排除起步与结束提交开销，用于跨连接档位比较。 */
+        /**
+         * 传输窗口内的吞吐：从首个响应字节到末块完成。
+         * 排除建连与**服务端首字节延迟**（真机实测可达 2s，且与服务端缓存状态相关，
+         * 与连接档位无关），否则它会把连接档位的比较全部污染。
+         */
         val steadyStateBytesPerSec: Double
             get() {
-                val start = firstRequestAtMs ?: return avgBytesPerSec
+                val start = firstByteAtMs ?: firstRequestAtMs ?: return avgBytesPerSec
                 val end = transferFinishedAtMs ?: return avgBytesPerSec
                 val window = (end - start).coerceAtLeast(1)
                 return bytesDone * 1000.0 / window

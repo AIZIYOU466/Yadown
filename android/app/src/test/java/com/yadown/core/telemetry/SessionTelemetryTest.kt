@@ -71,15 +71,27 @@ class SessionTelemetryTest {
     fun steadyStateRateExcludesStartupAndFinishOverhead() {
         SessionTelemetry.begin("s1")
         SessionTelemetry.onFirstRequest("s1", 2_000)
+        SessionTelemetry.onFirstByte("s1", 3_000)
         SessionTelemetry.onChunkDone("s1", 10_000_000)
         SessionTelemetry.onTransferFinished("s1", 7_000)
         SessionTelemetry.onFlush("s1", 90)
 
         val session = SessionTelemetry.current("s1")!!
-        // 传输窗口 5s，不包括 2s 起步与结束提交
-        assertEquals(2_000_000.0, session.steadyStateBytesPerSec, 1.0)
+        // 传输窗口 = 7s - 3s = 4s，既不含 2s 起步，也不含服务端首字节延迟（2s → 3s）
+        assertEquals(2_500_000.0, session.steadyStateBytesPerSec, 1.0)
         assertEquals(2_000L, session.firstRequestAtMs)
+        assertEquals(3_000L, session.firstByteAtMs)
         assertEquals(7_000L, session.transferFinishedAtMs)
+    }
+
+    @Test
+    fun steadyStateRateFallsBackToFirstRequestWithoutFirstByte() {
+        SessionTelemetry.begin("s4")
+        SessionTelemetry.onFirstRequest("s4", 2_000)
+        SessionTelemetry.onChunkDone("s4", 10_000_000)
+        SessionTelemetry.onTransferFinished("s4", 7_000)
+
+        assertEquals(2_000_000.0, SessionTelemetry.current("s4")!!.steadyStateBytesPerSec, 1.0)
     }
 
     @Test

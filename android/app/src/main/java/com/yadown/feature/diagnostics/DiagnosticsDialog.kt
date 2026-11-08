@@ -160,7 +160,7 @@ fun DiagnosticsDialog(
                     if (limiter.perKeyLimit.isNotEmpty()) {
                         Text(
                             "per-key " + limiter.perKeyLimit.entries.joinToString(" · ") { (key, limit) ->
-                                "$key=${limiter.perKeyInUse[key] ?: 0}/$limit"
+                                "${limiter.perKeyInUse[key] ?: 0}/$limit $key"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.semanticColors.subtleText
@@ -186,7 +186,7 @@ private fun formatSpeed(bytesPerSec: Double): String =
     }
 
 private fun formatWindow(session: SessionTelemetry.Session): String {
-    val start = session.firstRequestAtMs ?: return "-"
+    val start = session.firstByteAtMs ?: session.firstRequestAtMs ?: return "-"
     val end = session.transferFinishedAtMs ?: return "-"
     return String.format(Locale.US, "%.1fs", (end - start).coerceAtLeast(0) / 1000.0)
 }
