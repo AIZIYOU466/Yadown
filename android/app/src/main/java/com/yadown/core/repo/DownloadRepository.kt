@@ -290,6 +290,13 @@ class DownloadRepository @Inject constructor(
             // 会话预算先于下载登记：它是本任务的唯一并发权威，也是 per-key 闸门的上限。
             SessionTelemetry.begin(intentId, effectiveTopology.name, concurrency)
             TransferLimiter.updateGlobalLimit(concurrency)
+            // 首块走单连接（HTTP/2）独占带宽，落地后再用多连接放大吞吐：
+            // 真机同文件首块 REUSE 1455–1842ms vs MULTI 3380–3917ms，而稳态反过来。
+            val criticalSource = if (effectiveTopology == TransportTopology.MULTI_CONNECTION) {
+                source.criticalPhaseSource()
+            } else {
+                null
+            }
             engine.download(
                 intentId = intentId,
                 url = url,
@@ -327,7 +334,8 @@ class DownloadRepository @Inject constructor(
                     // 播放器可能在等待该区间，立即唤醒，避免固定 150ms 轮询。
                     RangeReadySignal.signal()
                 },
-                routes = routes
+                routes = routes,
+                criticalSource = criticalSource
             )
             completedIntents.add(intentId)
             // 公共目录发布要拷贝整个文件（100MB 时 1–3s），放后台不阻塞 COMPLETED 感知。

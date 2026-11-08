@@ -55,6 +55,8 @@ class PeerRangeSource(
         onBytes: (ByteArray) -> Unit
     ): SequentialResult = delegate.readSequential(url, start, onProgress, onBytes)
 
+    override fun criticalPhaseSource(): RangeSource = PeerRangeSource(delegate.criticalPhaseSource(), peers)
+
     override fun resetConnections() = delegate.resetConnections()
 }
 

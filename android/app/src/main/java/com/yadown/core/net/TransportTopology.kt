@@ -112,6 +112,8 @@ class TopologyRangeSource(
         TransportTopology.AUTO -> reuse
     }
 
+    override fun criticalPhaseSource(): RangeSource = reuse
+
     override fun resetConnections() {
         reuse.resetConnections()
         if (multiDelegate.isInitialized()) multiDelegate.value.resetConnections()

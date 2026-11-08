@@ -69,6 +69,14 @@ interface RangeSource {
     ): SequentialResult = throw UnsupportedOperationException("该源不支持顺序读取")
 
     /**
+     * 关键区间阶段的源：默认为自身。
+     *
+     * 多连接拓扑下返回单连接（HTTP/2）通路：首块靠单连接才能吃满带宽，
+     * 并发分块反而把它拆薄（真机：REUSE 首块 1455–1842ms vs MULTI 3380–3917ms）。
+     */
+    fun criticalPhaseSource(): RangeSource = this
+
+    /**
      * 丢弃当前源持有的空闲连接，让后续下载重新建连。
      * 用于避免跨任务复用已劣化（被 CDN 长连接限速/半死）的连接。
      */

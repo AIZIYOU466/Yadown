@@ -69,6 +69,9 @@ class MultiLinkRangeSource(
         onBytes: (ByteArray) -> Unit
     ): SequentialResult = delegate.readSequential(url, start, onProgress, onBytes)
 
+    override fun criticalPhaseSource(): RangeSource =
+        MultiLinkRangeSource(delegate.criticalPhaseSource(), linkSources, health, clock)
+
     override fun resetConnections() = delegate.resetConnections()
 
     private fun sourceOrNull(linkId: String?): RangeSource? =

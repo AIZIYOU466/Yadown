@@ -105,7 +105,12 @@ class DownloadEngine(
         onProgress: (DownloadProgress) -> Unit = {},
         onAvailable: () -> Unit = {},
         onChunkDone: (ChunkRange) -> Unit = {},
-        routes: List<SourceRoute> = emptyList()
+        routes: List<SourceRoute> = emptyList(),
+        /**
+         * 关键区间阶段使用的源（通常为单连接 HTTP/2 通路）。非 null 时首个分块单飞，
+         * 落地后立即转并发：首块只能靠单连接吃满带宽，并发会把它拆薄。
+         */
+        criticalSource: RangeSource? = null
     ) = withContext(ioDispatcher) {
         require(concurrency > 0) { "concurrency 必须为正: $concurrency" }
         val intent = intentDao.getById(intentId) ?: error("intent 不存在: $intentId")
@@ -173,14 +178,20 @@ class DownloadEngine(
         coroutineScope {
             val results = Channel<Outcome>(Channel.UNLIMITED)
             var active = 0
+            // 关键块落地（或失败/裂解）即退出单飞阶段，后续分块转并发。
+            var criticalPhaseFinished = false
             // 慢裂解产生的新块允许临时超出并发上限 20%，让快连接多吃；块完成后回落。
             var splitBonus = 0
             val maxSplitBonus = maxOf(1, concurrency / 5)
 
             while (pending.isNotEmpty() || active > 0) {
-                val limit = (DispatcherPolicy.maxRequests(health.score(), storageIops, linkCount) + splitBonus)
-                    .coerceAtMost(concurrency + maxSplitBonus)
-                    .coerceAtLeast(1)
+                // 关键区间阶段：只放一个（语义最高优先级的）分块单飞，且走 criticalSource。
+                val criticalPhase = criticalSource != null && !criticalPhaseFinished
+                val limit = if (criticalPhase) 1 else {
+                    (DispatcherPolicy.maxRequests(health.score(), storageIops, linkCount) + splitBonus)
+                        .coerceAtMost(concurrency + maxSplitBonus)
+                        .coerceAtLeast(1)
+                }
                 while (pending.isNotEmpty() && active < limit) {
                     val next = pending.removeFirst()
                     val route = SourceSelection.pick(
@@ -191,12 +202,14 @@ class DownloadEngine(
                     )
                     inFlight.getValue(route.healthKey).incrementAndGet()
                     active++
+                    val chunkSource = if (criticalPhase) criticalSource!! else source
                     launch {
                         val outcome = try {
                             val startedAt = clock()
                             downloadChunk(
                                 intentId = intentId,
                                 route = route,
+                                source = chunkSource,
                                 destPath = destPath,
                                 chunk = next.chunk,
                                 session = session,
@@ -261,7 +274,9 @@ class DownloadEngine(
 
                 if (active == 0) break
 
-                when (val outcome = results.receive()) {
+                val outcome = results.receive()
+                criticalPhaseFinished = true
+                when (outcome) {
                     is Outcome.Done -> {
                         active--
                         monitor.onChunkFinished(outcome.chunk.index)
@@ -544,6 +559,7 @@ class DownloadEngine(
     private suspend fun downloadChunk(
         intentId: String,
         route: SourceRoute,
+        source: RangeSource,
         destPath: String,
         chunk: ChunkRange,
         session: RangeSession,
@@ -571,7 +587,7 @@ class DownloadEngine(
                 val lastEmitAt = java.util.concurrent.atomic.AtomicLong(0)
                 readRangeWithWatchdog(
                     // 裂解与 stall 放宽看的是「该源能并行几条」（源维度信号），不是并发闸门。
-                    intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total,
+                    source, intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total,
                     onBytesProgress = { bytes ->
                         if (bytes > 0) onFirstByte()
                         // 块内字节进度上报：进度条不再只在块完成时跳一次，慢块期间也能看到推进。
@@ -638,6 +654,7 @@ class DownloadEngine(
      * 超时则取消底层请求并归因 NETWORK_TIMEOUT。
      */
     private suspend fun readRangeWithWatchdog(
+        source: RangeSource,
         intentId: String,
         url: String,
         linkId: String?,
