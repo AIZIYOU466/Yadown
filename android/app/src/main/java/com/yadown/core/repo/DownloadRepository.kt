@@ -268,6 +268,16 @@ class DownloadRepository @Inject constructor(
             null
         }
         val plannedMultiLimit = learnedLimit ?: topologySettings.multiConnectionLimit
+        if (effectiveTopology == TransportTopology.MULTI_CONNECTION) {
+            // 多任务并发时共享连接池，清空会打断其他任务，故只在单任务时重置。
+            if (jobs.size <= 1) source.resetConnections()
+            // 有上限地等预热：常见情况下 N 条 TCP+TLS 在 2 RTT 内建好，首波直接复用，
+            // 总连接数恰为预算；超时就取消在飞握手再开跑，既不留半成品连接，
+            // 也不像旧实现那样无上限阻塞在首块之前。
+            withTimeoutOrNull(WARMUP_DEADLINE_MS) {
+                runCatching { source.warmup(url, intentSize, plannedMultiLimit) }
+            }
+        }
         try {
             val coverage = coverages.computeIfAbsent(intentId) { RangeCoverage() }
             chunkDao.getByIntent(intentId)
@@ -286,11 +296,6 @@ class DownloadRepository @Inject constructor(
             // 会话预算先于下载登记：它是本任务的唯一并发权威，也是 per-key 闸门的上限。
             SessionTelemetry.begin(intentId, effectiveTopology.name, concurrency)
             TransferLimiter.updateGlobalLimit(concurrency)
-            // 多连接拓扑下先重建连接，避免复用跨任务劣化的旧连接；
-            // 多任务并发时共享连接池，清空会打断其他任务，故只在单任务时重置。
-            if (effectiveTopology == TransportTopology.MULTI_CONNECTION && jobs.size <= 1) {
-                source.resetConnections()
-            }
             engine.download(
                 intentId = intentId,
                 url = url,
@@ -756,6 +761,8 @@ class DownloadRepository @Inject constructor(
         val json = Json { ignoreUnknownKeys = true }
         const val PROGRESS_INTERVAL_MS = 200L
         const val PEER_LOOKUP_TIMEOUT_MS = 2_000L
+        /** 预热的等待上限：足够 2 RTT 建完 N 条连接，又不至于把首块拖成旧的 1.3s 级开销。 */
+        const val WARMUP_DEADLINE_MS = 350L
         /** 可学习的连接数档位：4/6 并行过少，优先在 8/12/16 中找甜点。 */
         val LEARNABLE_LIMITS = listOf(8, 12, 16)
     }
