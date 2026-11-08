@@ -67,7 +67,8 @@ fun DiagnosticsDialog(
                     Text(
                         buildString {
                             append("首块 ${session.firstChunkAtMs?.let { "${it}ms" } ?: "-"}")
-                            append("（首请求 ${session.firstRequestAtMs?.let { "${it}ms" } ?: "-"}）")
+                            append("（首请求 ${session.firstRequestAtMs?.let { "${it}ms" } ?: "-"}")
+                            append(" · 首字节 ${session.firstByteAtMs?.let { "${it}ms" } ?: "-"}）")
                             append(" · 落盘提交 ${session.flushMs?.let { "${it}ms" } ?: "-"}")
                             append(" · 完成校验 ${session.verifyMs?.let { "${it}ms" } ?: "-"}")
                         },

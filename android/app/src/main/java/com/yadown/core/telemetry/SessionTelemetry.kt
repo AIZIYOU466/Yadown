@@ -31,6 +31,8 @@ object SessionTelemetry {
         var firstChunkAtMs: Long? = null,
         /** 首个分块请求真正发出（取得传输许可）距会话开始的毫秒数：不含调度与预热。 */
         var firstRequestAtMs: Long? = null,
+        /** 首个响应字节到达距会话开始的毫秒数：与 [firstRequestAtMs] 的差就是服务端首字节延迟。 */
+        var firstByteAtMs: Long? = null,
         /** 最后一个分块完成距会话开始的毫秒数，与 [firstRequestAtMs] 构成传输窗口。 */
         var transferFinishedAtMs: Long? = null,
         /** 结束前 flush + 最终提交（fsync）耗时。 */
@@ -144,6 +146,16 @@ object SessionTelemetry {
     fun onTransferFinished(intentId: String, elapsedMs: Long) {
         synchronized(lock) {
             sessions[intentId]?.let { it.transferFinishedAtMs = elapsedMs.coerceAtLeast(0) }
+        }
+    }
+
+    fun onFirstByte(intentId: String, elapsedMs: Long) {
+        synchronized(lock) {
+            sessions[intentId]?.let { session ->
+                if (session.firstByteAtMs == null) {
+                    session.firstByteAtMs = elapsedMs.coerceAtLeast(0)
+                }
+            }
         }
     }
 

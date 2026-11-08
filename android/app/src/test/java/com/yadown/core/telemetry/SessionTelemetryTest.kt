@@ -83,6 +83,19 @@ class SessionTelemetryTest {
     }
 
     @Test
+    fun firstByteAndFirstRequestAreRecordedSeparately() {
+        SessionTelemetry.begin("b1")
+        SessionTelemetry.onFirstRequest("b1", 90)
+        SessionTelemetry.onFirstByte("b1", 320)
+        SessionTelemetry.onFirstByte("b1", 900)
+
+        val session = SessionTelemetry.current("b1")!!
+        assertEquals(90L, session.firstRequestAtMs)
+        // 首字节只记首次：服务端首字节延迟 = 320 - 90
+        assertEquals(320L, session.firstByteAtMs)
+    }
+
+    @Test
     fun steadyStateRateFallsBackToAverageWithoutWindow() {
         SessionTelemetry.begin("s2")
         SessionTelemetry.onChunkDone("s2", 1_000)

@@ -211,6 +211,9 @@ class DownloadEngine(
                                     SessionTelemetry.onPeakConcurrency(intentId, concurrent)
                                     SessionTelemetry.onFirstRequest(intentId, clock() - sessionStartedAt)
                                 },
+                                onFirstByte = {
+                                    SessionTelemetry.onFirstByte(intentId, clock() - sessionStartedAt)
+                                },
                                 onProgress = onProgress,
                                 onChunkDone = onChunkDone
                             )
@@ -552,6 +555,7 @@ class DownloadEngine(
         perKeyLimit: Int,
         requestsInFlight: AtomicInteger,
         onRequestStarted: (Int) -> Unit,
+        onFirstByte: () -> Unit,
         onProgress: (DownloadProgress) -> Unit,
         onChunkDone: (ChunkRange) -> Unit
     ) {
@@ -569,6 +573,7 @@ class DownloadEngine(
                     // 裂解与 stall 放宽看的是「该源能并行几条」（源维度信号），不是并发闸门。
                     intentId, route.url, route.linkId, route.connectionLimit, chunk, startedAt, total,
                     onBytesProgress = { bytes ->
+                        if (bytes > 0) onFirstByte()
                         // 块内字节进度上报：进度条不再只在块完成时跳一次，慢块期间也能看到推进。
                         val now = clock()
                         if (now - lastEmitAt.get() >= PROGRESS_EMIT_MS) {
