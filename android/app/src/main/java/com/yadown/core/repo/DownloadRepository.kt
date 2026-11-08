@@ -32,6 +32,7 @@ import com.yadown.core.source.SourceKind
 import com.yadown.core.source.SourceRoute
 import com.yadown.core.source.SourceRouter
 import com.yadown.core.source.HostTuning
+import com.yadown.core.source.HostTuningPolicy
 import com.yadown.core.source.HostTuningStore
 import com.yadown.core.telemetry.SessionTelemetry
 import com.yadown.core.transfer.BitmapStore
@@ -260,8 +261,9 @@ class DownloadRepository @Inject constructor(
         val effectiveTopology = topologySettings.resolve(intentSize)
         val host = HostTuning.hostOf(url)
         // 同 host 已学到更优连接数时优先用它；否则用手动档/默认档。
+        // 分块很少时高档位只会把建连与慢启动摊到一两个块上，候选先按块数收敛。
         val learnedLimit = if (effectiveTopology == TransportTopology.MULTI_CONNECTION && host != null) {
-            hostTuning.chooseLimit(host, LEARNABLE_LIMITS)
+            hostTuning.chooseLimit(host, learnableLimits(intentSize))
         } else {
             null
         }
@@ -682,8 +684,18 @@ class DownloadRepository @Inject constructor(
             runCatching { peerSourceProvider.endpointsFor(intent) }.getOrDefault(emptyList())
         } ?: emptyList()
 
-    private fun decodeMirrors(text: String?): List<String> =
-        text?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
+    /**
+     * 本文件可用的学习档位：块数太少时不开高并发（建连与慢启动摊不薄），
+     * 候选变少的同时也让学习更快收敛。
+     */
+    private fun learnableLimits(totalSize: Long?): List<Int> {
+        if (totalSize == null || totalSize <= 0) return LEARNABLE_LIMITS
+        val chunkSize = DownloadPlan.DEFAULT_CHUNK_SIZE
+        val chunkCount = (totalSize + chunkSize - 1) / chunkSize
+        return HostTuningPolicy.usableLimits(chunkCount, LEARNABLE_LIMITS)
+    }
+
+    private fun decodeMirrors(text: String?): List<String> =        text?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
             .orEmpty()
 
     private fun notifyCompleted(intentId: String, url: String) {

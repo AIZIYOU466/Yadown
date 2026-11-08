@@ -45,6 +45,26 @@ object HostTuningPolicy {
             .filter { samples.containsKey(it) }
             .maxByOrNull { samples.getValue(it).throughput }
     }
+
+    /**
+     * 剔除「每条连接摊不到 [minChunksPerConnection] 个分块」的档位。
+     *
+     * TCP+TLS 建连与 TCP 慢启动是每条连接的一次性成本，它只能摊到该连接实际扛的分块上：
+     * 两个分块共用一条连接时，档位越高、每条连接摊到的块越少，多出的握手与冷启动就直接吃掉收益。
+     * 真机 23 个 1MiB 分块跑预算 16 时每条连接只摊到 1.4 个块，首块与均速都不如 8——
+     * 首波（新连接）比后续（热连接）慢一倍以上，就是这条成本的直接证据。
+     *
+     * 块数很少时只保留最小档位；条数足够时全部保留，不影响大文件。
+     */
+    fun usableLimits(
+        chunkCount: Long,
+        candidates: List<Int>,
+        minChunksPerConnection: Int = 2
+    ): List<Int> {
+        if (candidates.isEmpty() || chunkCount <= 0) return candidates
+        val maxUseful = chunkCount / minChunksPerConnection.coerceAtLeast(1)
+        return candidates.filter { it <= maxUseful }.ifEmpty { listOf(candidates.first()) }
+    }
 }
 
 /** 从 URL 提取学习键（host，小写；无 host 时返回 null）。 */

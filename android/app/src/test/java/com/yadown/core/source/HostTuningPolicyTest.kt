@@ -55,4 +55,26 @@ class HostTuningPolicyTest {
         assertEquals("github.com", HostTuning.hostOf("https://GitHub.com/a/b"))
         assertNull(HostTuning.hostOf("not a url"))
     }
+
+    @Test
+    fun usableLimitsDropArmsWithTooFewChunksPerConnection() {
+        val arms = listOf(8, 12, 16)
+        // 23 个分块：每条连接至少要摊 2 个块，只有 8 档合格
+        assertEquals(listOf(8), HostTuningPolicy.usableLimits(23, arms))
+        // 25 个分块：12 也合格（2.08 块/连接）
+        assertEquals(listOf(8, 12), HostTuningPolicy.usableLimits(25, arms))
+        // 32 个分块：三档都能摊到 2 个以上
+        assertEquals(arms, HostTuningPolicy.usableLimits(32, arms))
+    }
+
+    @Test
+    fun usableLimitsKeepSmallestArmForTinyFiles() {
+        assertEquals(listOf(8), HostTuningPolicy.usableLimits(4, listOf(8, 12, 16)))
+    }
+
+    @Test
+    fun usableLimitsPassThroughUnknownChunkCount() {
+        assertEquals(listOf(8, 12, 16), HostTuningPolicy.usableLimits(0, listOf(8, 12, 16)))
+        assertEquals(emptyList<Int>(), HostTuningPolicy.usableLimits(23, emptyList()))
+    }
 }
